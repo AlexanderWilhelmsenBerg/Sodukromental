@@ -48,3 +48,7 @@ The board follows the Hum palette, with outlined regions, monospaced digits, tac
 | S1 | Observe physical tilt, overlay controls, first-time token discovery, and the time players spend waiting for deliveries. Use the same screen-size coverage when fixing findings. |
 | S2 | Check that a signed update preserves progress and settings across a real install and presents the same download fingerprint as the release handoff. |
 | S3 | Run the live update banner and Settings entry through current, newer, incompatible, and unavailable server states on the distributed Android build. |
+
+## Screen captures
+
+The debug handoff packages the original PNGs in `campaign-design/`. The `boards-contact-sheet.png`, `colony-contact-sheet.png`, and `library-and-settings-contact-sheet.png` index the captures at 320, 375, 414, and 768 dp. The boards sheet covers the opening, Renban, a Sandwich edge clue, and the dark starting state for Halo. The colony sheet covers the creator, the creature profile, settlement management, and sprite poses. Library and Settings use the fixture app shell.

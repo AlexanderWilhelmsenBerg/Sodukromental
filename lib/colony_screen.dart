@@ -482,6 +482,11 @@ class _ColonyScreenState extends State<ColonyScreen> {
 
   Widget _board(bool reducedMotion) {
     final allMarks = board.rules
+        .where(
+          (rule) =>
+              rule.kind != RuleKind.antiKnight ||
+              _cell != null && rule.cells.contains(_cell),
+        )
         .map((rule) => BoardMark(rule.kind.name, rule.cells, rule.target))
         .toList();
     final marks = _allMarks
@@ -1394,7 +1399,11 @@ class _ColonyScreenState extends State<ColonyScreen> {
           ListTile(
             contentPadding: EdgeInsets.zero,
             title: Text(expedition.title),
-            subtitle: const Text('Expedition cleared'),
+            subtitle: Text(
+              run.almanacCrew(expedition.id).isEmpty
+                  ? 'Expedition cleared'
+                  : 'Crew · ${run.almanacCrew(expedition.id).join(', ')}',
+            ),
           ),
       ],
     ),

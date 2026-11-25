@@ -261,7 +261,7 @@ class _SudokuBoardViewState extends State<SudokuBoardView> {
       if (anchored) 'locked' else if (fixed) 'given',
       if (conflict) 'conflict',
       if (notes.isNotEmpty) 'candidates ${notes.join(', ')}',
-      ...covering.map((mark) => mark.description),
+      ...covering.map((mark) => mark.description).toSet(),
     ].join(', ');
     void select() {
       _focus.requestFocus();
@@ -511,7 +511,8 @@ class _BoardGround extends CustomPainter {
         }
         continue;
       }
-      if (['sandwich', 'xSum', 'xSums'].contains(mark.kind)) continue;
+      if (['sandwich', 'xSum', 'xSums', 'antiKnight'].contains(mark.kind))
+        continue;
       if (points.length < 2) continue;
       final color = switch (mark.kind) {
         'thermometer' => Hum.grid.withValues(alpha: .40),

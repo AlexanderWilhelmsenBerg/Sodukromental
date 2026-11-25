@@ -324,7 +324,9 @@ Campaign _restoreCampaign(Map<String, dynamic> json) {
   campaign._cosmetics.addAll(_list<String>(json['cosmetics']));
   campaign._archives.addAll(_maps(json['archives']));
   for (final item in _map(json['almanacCrews']).entries) {
-    campaign._almanacCrews[item.key] = _map(item.value).cast<String, String>();
+    campaign._almanacCrews[item.key] = Map.of(
+      _map(item.value).cast<String, String>(),
+    );
   }
   for (final id in [
     ...campaign._cleared,

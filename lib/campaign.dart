@@ -754,6 +754,7 @@ class Campaign {
       _putStock(offer.digit, [tile]);
       return _rejectFog(index, offer.digit);
     }
+    _worker(offer.workerId)?.memory.recordTask(runId, board.id, TaskKind.digit);
     _place(index, offer.digit, _Tile(tile.id, offer.workerId));
     return true;
   }
@@ -781,13 +782,6 @@ class Campaign {
     _current.reaction = null;
     _current.cells[index] = digit;
     _current.tiles[index] = tile;
-    final origin = tile.origin;
-    if (origin != null) {
-      _current.contributors[origin] = TaskKind.digit;
-      _worker(
-        origin,
-      )?.memory.recordContribution(runId, board.id, TaskKind.digit);
-    }
     if (board.fog != FogKind.none) {
       _current.fixed.add(index);
       _checkReveals();
@@ -1204,6 +1198,7 @@ class Campaign {
   void _settle(ColonyJob job, {required bool offline}) {
     _materialJobs.remove(job);
     _current.jobs.remove(job);
+    _worker(job.workerId)?.memory.recordTask(runId, board.id, job.kind);
     switch (job.kind) {
       case TaskKind.digit:
         final tiles = job.tileIds.map((id) => _Tile(id, job.workerId)).toList();
@@ -1255,6 +1250,7 @@ class Campaign {
       (board) => board.finale && _cleared.contains(board.id),
     )) {
       worker.memory.recordContribution(runId, stage.id, TaskKind.building);
+      worker.memory.recordTask(runId, stage.id, TaskKind.building);
       worker.memory.recordClear(runId, stage.id);
       _almanacCrews.putIfAbsent(stage.id, () => {})[worker.id] = worker.name;
     }

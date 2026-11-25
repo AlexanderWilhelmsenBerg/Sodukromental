@@ -101,6 +101,26 @@ class _Drive {
 }
 
 void main() {
+  test(
+    'optional building progress can be praised without crediting a shared clear',
+    () {
+      final run = Campaign(now: _epoch);
+      _opening(run);
+      expect(run.advance(), isTrue);
+      final drive = _Drive(run)..solve();
+      expect(run.openLibraryChallenge(boardsById['growth-5']!), isTrue);
+      final worker = run.creatures.single;
+      final shared = worker.memory.sharedClears;
+      expect(run.requestMaterial('nest', MaterialRole.roof), isTrue);
+      drive.elapse(3);
+      expect(run.encourage(worker.id), isTrue);
+      expect(run.encourage(worker.id), isFalse);
+      expect(worker.memory.preferredTask, TaskKind.building);
+      drive.solve();
+      expect(worker.memory.sharedClears, shared);
+    },
+  );
+
   test('each authored variant requires all of its featured rule families', () {
     for (final board in campaignBoards) {
       final families = board.rules.map((rule) => rule.kind).toSet();
@@ -249,16 +269,22 @@ void main() {
         drive.run.almanacCrew('night-market'),
         contains(drive.run.creatures.single.name),
       );
+      expect(
+        drive.run.projects.where((item) => item.id.startsWith('cosmetic-')),
+        hasLength(4),
+      );
+      const cosmetic = 'cosmetic-night-market';
+      expect(drive.run.requestMaterial(cosmetic, MaterialRole.support), isTrue);
+      expect(drive.run.requestMaterial(cosmetic, MaterialRole.ring), isTrue);
+      drive.elapse(6);
+      expect(drive.run.build(cosmetic), isTrue);
       expect(drive.run.prestige(quick: true), isTrue);
       final resumed = _reload(drive.run);
       expect(resumed.almanacClears, hasLength(28));
       expect(resumed.fogMastered, isTrue);
       expect(resumed.masteredRules, contains(RuleKind.kropkiWhite));
       expect(resumed.almanacCrew('night-market'), isNotEmpty);
-      expect(
-        drive.run.projects.where((item) => item.id.startsWith('cosmetic-')),
-        hasLength(4),
-      );
+      expect(resumed.cosmetics, contains(cosmetic));
     },
   );
 

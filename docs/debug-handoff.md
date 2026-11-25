@@ -6,6 +6,8 @@ The APK, checksum, source revision, application ID, version and launch evidence 
 
 Once the candidate is available, download the APK from its supplied artifact location. Compare its SHA-256 with the value listed for that candidate. Open the APK on Android and follow the installation prompt. If prompted, allow the current download app to install the package. With Android platform tools and a connected test device, `adb install -r <apk>` installs it or replaces a compatible earlier build. A signature mismatch can require uninstalling the earlier debug build, which removes its local saves. Keep an earlier build and its saves when testing an upgrade until the candidate's signing identity is confirmed.
 
+The Library contains 28 authored puzzles for offline play and listing metadata for 32,523 Logic Masters puzzles. Additional author rules load when the Library syncs or opens an entry. **Automatically download Logic Masters puzzles** starts off. For a portal puzzle, save its assets while connected before trying an offline solve. The details page shows whether the entry can be played offline, viewed as a diagram or opened on the original site. The 67 verified Cracking the Cryptic badges work offline, with an internet connection required to play the linked video. [Library requirements](library-specification.md)
+
 ## Playtest scenarios
 
 Try the opening once before reading the coordinates. Record what you thought could be touched after each action and where you needed a hint.
