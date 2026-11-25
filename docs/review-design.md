@@ -57,4 +57,4 @@ The checked-in contact sheets show [the opening, variants and fog](evidence/boar
 
 Android 9 rendered the opening on a clean install of the `5083583` local build. [Device screenshot](evidence/android-9-opening.png)
 
-The Android 14 device test captured the same retained companion above the launcher and an ordinary app. [Launcher visit](evidence/companion-launcher.png) · [Visit over another app](evidence/companion-other-app.png)
+The retained companion stayed visible over the launcher, Android 9 Calculator and Android 14 Contacts. Android hid it while Contacts displayed its notification permission dialog. The system window record confirmed when the creature was on screen. [Launcher visit](evidence/companion-launcher.png) · [Calculator visit](evidence/companion-calculator-android-9.png) · [Contacts visit](evidence/companion-other-app.png) · [System permission dialog](evidence/companion-hidden-by-permission.png)
