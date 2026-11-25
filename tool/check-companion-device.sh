@@ -74,10 +74,21 @@ android shell input keyevent KEYCODE_HOME
 sleep 2
 capture_overlay() {
   local view=$1
-  android shell dumpsys window windows > "$artifacts/$view-window.txt"
-  grep -A 25 'Sodukromental companion' "$artifacts/$view-window.txt" |
-    grep -E 'APPLICATION_OVERLAY|ty=2038'
-  android exec-out screencap -p > "$artifacts/$view.png"
+  for (( attempt = 0; attempt < 10; attempt++ )); do
+    android shell dumpsys window windows > "$artifacts/$view-window.txt"
+    if awk '
+      /Window #[0-9]+ Window\{/ { companion = /Sodukromental companion/ }
+      companion && /ty=(APPLICATION_OVERLAY|2038)/ { overlay = 1 }
+      companion && /isOnScreen=true/ { visible = 1 }
+      END { exit !(overlay && visible) }
+    ' "$artifacts/$view-window.txt"; then
+      android exec-out screencap -p > "$artifacts/$view.png"
+      return
+    fi
+    sleep 1
+  done
+  echo "Android did not show the companion over $view." >&2
+  return 1
 }
 capture_overlay launcher
 for category in APP_CALCULATOR APP_CONTACTS; do
@@ -86,6 +97,11 @@ for category in APP_CALCULATOR APP_CONTACTS; do
   if [[ "$component" == */* ]]; then break; fi
 done
 [[ "$component" == */* ]]
+if (( sdk >= 33 )); then
+  # Keep the fixture on the other app's ordinary surface. Android deliberately
+  # hides overlays above first-launch permission dialogs.
+  android shell pm grant "${component%%/*}" android.permission.POST_NOTIFICATIONS 2>/dev/null || true
+fi
 android shell am start -W -a android.intent.action.MAIN -n "$component"
 capture_overlay other-app
 android shell input keyevent KEYCODE_HOME
