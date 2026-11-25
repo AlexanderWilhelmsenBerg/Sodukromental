@@ -1,0 +1,135 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: Android APK type
+        required: true
+        type: choice
+        default: debug
+        options:
+          - debug
+          - release
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-build-${{ inputs.build_type == 'release' && github.repository || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  debug:
+    if: inputs.build_type == 'debug'
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: ./.github/actions/flutter-android
+      - name: Build debug APK
+        env:
+          SODU_DEBUG_STORE_BASE64: ${{ secrets.SODU_DEBUG_STORE_BASE64 }}
+          SODU_DEBUG_STORE_PASSWORD: ${{ secrets.SODU_DEBUG_STORE_PASSWORD }}
+          SODU_DEBUG_KEY_ALIAS: ${{ secrets.SODU_DEBUG_KEY_ALIAS }}
+          SODU_DEBUG_KEY_PASSWORD: ${{ secrets.SODU_DEBUG_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$SODU_DEBUG_STORE_BASE64" ]]; then
+            umask 077
+            export SODU_DEBUG_STORE="$RUNNER_TEMP/sodukromental-debug.jks"
+            trap 'rm -f "$SODU_DEBUG_STORE"' EXIT
+            printf '%s' "$SODU_DEBUG_STORE_BASE64" | base64 --decode > "$SODU_DEBUG_STORE"
+          fi
+          flutter build apk --debug --no-pub
+          bash .github/workflows/inspect-apk.sh debug
+      - uses: ./.github/actions/emulator-kvm
+      - name: Install and launch the exact debug artifact
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: default
+          disable-animations: true
+          script: bash .github/workflows/test-android.sh apk-artifact/*-debug-android.apk
+      - name: Save device failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-artifact-failure-${{ github.sha }}-${{ github.run_attempt }}
+          path: android-diagnostics/
+          if-no-files-found: ignore
+      - name: Upload installable debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: sodukromental-debug-${{ github.sha }}-${{ github.run_attempt }}
+          path: apk-artifact/
+          if-no-files-found: error
+
+  sign:
+    if: inputs.build_type == 'release'
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    environment: android-release
+    steps:
+      - name: Require a default branch build
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: ./.github/actions/flutter-android
+      - name: Build and verify signed universal APK
+        env:
+          SODU_RELEASE_STORE_BASE64: ${{ secrets.SODU_RELEASE_STORE_BASE64 }}
+          SODU_RELEASE_STORE_PASSWORD: ${{ secrets.SODU_RELEASE_STORE_PASSWORD }}
+          SODU_RELEASE_KEY_ALIAS: ${{ secrets.SODU_RELEASE_KEY_ALIAS }}
+          SODU_RELEASE_KEY_PASSWORD: ${{ secrets.SODU_RELEASE_KEY_PASSWORD }}
+          SODU_RELEASE_CERT_SHA256: ${{ secrets.SODU_RELEASE_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          : "${SODU_RELEASE_STORE_BASE64:?Release signing key is required}"
+          : "${SODU_RELEASE_STORE_PASSWORD:?Release signing password is required}"
+          : "${SODU_RELEASE_KEY_ALIAS:?Release signing alias is required}"
+          : "${SODU_RELEASE_KEY_PASSWORD:?Release key password is required}"
+          : "${SODU_RELEASE_CERT_SHA256:?Expected signing certificate is required}"
+          umask 077
+          export SODU_RELEASE_STORE="$RUNNER_TEMP/sodukromental-release.jks"
+          trap 'rm -f "$SODU_RELEASE_STORE"' EXIT
+          printf '%s' "$SODU_RELEASE_STORE_BASE64" | base64 --decode > "$SODU_RELEASE_STORE"
+          flutter build apk --release --no-pub --dart-define=GITHUB_DISTRIBUTION=true
+          bash .github/workflows/inspect-apk.sh release
+      - name: Upload signed APK and metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: sodukromental-release-${{ github.sha }}
+          path: apk-artifact/
+          overwrite: true
+          if-no-files-found: error
+
+  publish:
+    needs: sign
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: sodukromental-release-${{ github.sha }}
+          path: apk-artifact/
+      - name: Publish stable Android release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/workflows/publish-android.sh

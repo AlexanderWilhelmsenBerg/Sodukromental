@@ -1,0 +1,20 @@
+name: Set up Flutter and Android
+description: Install the Android build tools and resolve the checked-in Flutter dependencies
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '21.0.13+9'
+    - uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '3.44.4'
+        channel: stable
+        cache: true
+    - name: Install Android SDK packages
+      shell: bash
+      run: sdkmanager 'platform-tools' 'platforms;android-35' 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358' 'cmake;3.22.1'
+    - name: Resolve locked dependencies
+      shell: bash
+      run: flutter pub get --enforce-lockfile

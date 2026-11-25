@@ -34,7 +34,19 @@ The project owner represents the business and user interests and sets the releas
 | **Android delivery** | Own tilt, overlay permissions, the debug workflow and tester artifact. Test Android controls on the emulator and record physical results where a device is available. Keep production signing and publishing in the follow-on plan. |
 | **Independent verification** | Check the finished commit against the acceptance evidence. Report reproduction steps, actual test results, device and OS, and release blockers. Keep this review separate from implementation. |
 
-Give economical agents one focused slice in an isolated worktree, with the baseline commit, relevant spec sections, their files, direct dependencies, and the acceptance command or scenario. Reuse an agent for adjacent slices. Run up to three implementation lanes at once and use stronger reasoning for cross-module design or a concrete unresolved failure. Each handoff gives the branch, commit, commands run, actual results, status, and any exception. The coordinator integrates and repeats affected checks.
+### Review and coordination on every slice
+
+The story, game mechanics, and UI/UX agents each review **every debug slice**, including build and data work. For infrastructure, reviewers examine a concrete player consequence such as a lost companion on upgrade, a misleading availability label, or a hard-to-reproduce feedback report. Record one testable observation or a reasoned pass per discipline and slice. The [coordinator review](agent-review.md) links the three inputs, the decision, the owner of a change, and the resulting evidence.
+
+| Agent | Instructions and decision boundary |
+| --- | --- |
+| Story | Read the acceptance scenario in order as a first-time player. Check what the player knows, the helper’s motive, whether the reaction communicates the rule, and whether any dialogue, identity, or attribution survives a restart. Return a slice ID, observation, proposed action, and observable result. |
+| Game mechanics | Play or simulate the happy path and one interruption or counterexample. Check solveability, inventories, earned resources, unlocks, retries and replay. Supply a reproducible move sequence, seed, fixture, or invariant. |
+| UI/UX designer | Inspect the slice via touch, tap selection, keyboard, and assistive labels as applicable. Check the portrait board, narrow screens, contrast, motion alternatives, visual feedback, empty states, and permission wording. Give a precise screen, action, and expected result. |
+| Review coordinator and independent assurance | Combine the three reviews per slice. Resolve duplicate findings, give implementers concrete changes, and request a retest of the same scenario. Record both accepted changes and declined suggestions with reasons. Verify builds independently. |
+| Project manager and architect | Own stage decisions, module contracts and integration. Settle conflicting recommendations against the intended player experience and release tests. Retain open evidence gaps in the register. Authorize reversible engineering and balance choices within the debug scope. |
+
+Implementation agents work in disjoint file areas in the shared checkout using the same pinned dependencies. Reuse economical agents across slices and reserve architectural decisions for integration. The story, mechanics and UI/UX agents can also implement their own assigned components. Independent assurance and the project manager retain acceptance authority. A review pass contains the initial finding, the coordinator decision, the implementation change, and the independent result on the current build. The tester handoff identifies checks still requiring a physical device.
 
 ## Tolerances and exceptions
 
