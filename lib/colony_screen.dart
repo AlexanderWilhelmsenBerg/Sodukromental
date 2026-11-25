@@ -2112,11 +2112,11 @@ class _Panel extends StatelessWidget {
   const _Panel({required this.child});
   final Widget child;
   @override
-  Widget build(BuildContext context) => DecoratedBox(
-    decoration: BoxDecoration(
-      color: Hum.board,
+  Widget build(BuildContext context) => Material(
+    color: Hum.board,
+    shape: RoundedRectangleBorder(
       borderRadius: BorderRadius.circular(12),
-      border: Border.all(color: Hum.grid.withValues(alpha: .44)),
+      side: BorderSide(color: Hum.grid.withValues(alpha: .44)),
     ),
     child: Padding(padding: const EdgeInsets.all(12), child: child),
   );

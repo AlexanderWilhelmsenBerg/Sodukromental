@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'brand.dart';
 import 'campaign.dart';
 import 'colony_screen.dart';
 import 'creatures.dart';
@@ -351,13 +352,9 @@ class _GameHomeState extends State<GameHome> with WidgetsBindingObserver {
     return Scaffold(
       appBar: AppBar(
         leadingWidth: 52,
-        leading: Padding(
-          padding: const EdgeInsets.only(left: 16, top: 10, bottom: 10),
-          child: Image.asset(
-            'assets/brand/mark.png',
-            filterQuality: FilterQuality.none,
-            excludeFromSemantics: true,
-          ),
+        leading: const Padding(
+          padding: EdgeInsets.only(left: 16, top: 10, bottom: 10),
+          child: BrandMark(),
         ),
         titleSpacing: 8,
         title: const Text(
