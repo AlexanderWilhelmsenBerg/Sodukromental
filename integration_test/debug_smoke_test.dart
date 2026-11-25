@@ -30,6 +30,26 @@ void main() {
         await tester.pump(const Duration(milliseconds: 200));
       }
 
+      Future<void> revealBelowFold(Finder target) async {
+        // Lazy lists mount their lower controls only after the player scrolls.
+        // Allow a newly pushed route to finish its entrance animation first.
+        await tester.pump(const Duration(milliseconds: 450));
+        if (target.evaluate().isEmpty) {
+          await tester.scrollUntilVisible(
+            target,
+            280,
+            scrollable: find
+                .byWidgetPredicate(
+                  (widget) =>
+                      widget is Scrollable &&
+                      widget.axisDirection == AxisDirection.down,
+                )
+                .last,
+          );
+        }
+        await tester.ensureVisible(target.first);
+      }
+
       await waitFor(cell(5));
       for (final (from, to) in [(5, 1), (9, 5), (10, 9), (5, 4)]) {
         await tap(cell(from));
@@ -109,20 +129,12 @@ void main() {
       await waitFor(find.text('Grow to 6×6'));
       await tap(find.text('Colony jobs'));
       await tap(find.text('Design a creature'));
+      await revealBelowFold(find.text('Review hatch'));
       await tap(find.text('Review hatch'));
+      await revealBelowFold(find.text('Hatch'));
       await tap(find.text('Hatch'));
       final talk = find.text('Talk to creature');
-      if (talk.evaluate().isEmpty) {
-        await tester.scrollUntilVisible(
-          talk,
-          300,
-          scrollable: find
-              .byWidgetPredicate(
-                (w) => w is Scrollable && w.axisDirection == AxisDirection.down,
-              )
-              .last,
-        );
-      }
+      await revealBelowFold(talk);
       await waitFor(talk);
     },
   );
