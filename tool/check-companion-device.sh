@@ -93,22 +93,77 @@ android shell dumpsys notification > "$artifacts/notification.txt"
 grep -F 'companion_roaming' "$artifacts/notification.txt"
 android shell cmd statusbar expand-notifications
 sleep 2
-android shell uiautomator dump /data/local/tmp/companion-shade.xml
-android exec-out cat /data/local/tmp/companion-shade.xml > "$artifacts/notification-shade.xml"
-read -r stop_x stop_y < <(python3 - "$artifacts/notification-shade.xml" <<'PY'
+capture_shade() {
+  android shell uiautomator dump /data/local/tmp/companion-shade.xml
+  android exec-out cat /data/local/tmp/companion-shade.xml > "$1"
+}
+
+notification_point() {
+  python3 - "$1" "$2" <<'PY'
 import re
 import sys
 from xml.etree import ElementTree
 
-for node in ElementTree.parse(sys.argv[1]).iter('node'):
-    if 'Stop roaming' in (node.get('text'), node.get('content-desc')):
-        x1, y1, x2, y2 = map(int, re.findall(r'\d+', node.get('bounds', '')))
-        print((x1 + x2) // 2, (y1 + y2) // 2)
-        break
+path, action = sys.argv[1:]
+root = ElementTree.parse(path).getroot()
+
+def labels(node):
+    return (node.get('text', '').strip().casefold(),
+            node.get('content-desc', '').strip().casefold())
+
+def show_point(node):
+    match = re.fullmatch(r'\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]', node.get('bounds', ''))
+    if not match:
+        return False
+    x1, y1, x2, y2 = map(int, match.groups())
+    if x2 <= x1 or y2 <= y1:
+        return False
+    print((x1 + x2) // 2, (y1 + y2) // 2)
+    return True
+
+if action == 'stop':
+    for node in root.iter('node'):
+        if 'stop roaming' in labels(node) and show_point(node):
+            sys.exit(0)
 else:
-    raise SystemExit('Stop roaming was not visible in the Android notification shade.')
+    parents = {child: parent for parent in root.iter() for child in parent}
+    for title in root.iter('node'):
+        if not any(label.endswith(' is roaming') for label in labels(title)):
+            continue
+        ancestor = parents.get(title)
+        while ancestor is not None:
+            if ancestor.get('resource-id', '').endswith('/notification_stack_scroller'):
+                break
+            for node in ancestor.iter('node'):
+                resource = node.get('resource-id', '').rsplit('/', 1)[-1]
+                accessible_expand = any(label == 'expand' or label.startswith('expand notification')
+                                        for label in labels(node))
+                if (resource == 'expand_button' or accessible_expand) and show_point(node):
+                    sys.exit(0)
+            ancestor = parents.get(ancestor)
+
+sys.exit(1)
 PY
-)
+}
+
+shade="$artifacts/notification-shade.xml"
+capture_shade "$shade"
+if ! stop_point="$(notification_point "$shade" stop)"; then
+  if ! expand_point="$(notification_point "$shade" expand)"; then
+    echo 'The companion notification has no visible Stop roaming or Expand action.' >&2
+    exit 1
+  fi
+  read -r expand_x expand_y <<< "$expand_point"
+  android shell input tap "$expand_x" "$expand_y"
+  sleep 2
+  shade="$artifacts/notification-shade-expanded.xml"
+  capture_shade "$shade"
+  if ! stop_point="$(notification_point "$shade" stop)"; then
+    echo 'Stop roaming was not visible after expanding the companion notification.' >&2
+    exit 1
+  fi
+fi
+read -r stop_x stop_y <<< "$stop_point"
 android shell input tap "$stop_x" "$stop_y"
 android shell cmd statusbar collapse
 android shell am start -W --activity-single-top -n "$activity"
