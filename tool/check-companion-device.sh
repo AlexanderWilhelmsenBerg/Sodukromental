@@ -24,8 +24,8 @@ mkdir -p "$artifacts"
 cleanup() {
   local code=$?
   if [[ -n "${fixture_pid:-}" ]]; then kill "$fixture_pid" 2>/dev/null || true; fi
-  if [[ -n "${log_pid:-}" ]]; then kill "$log_pid" 2>/dev/null || true; fi
   if (( code != 0 )); then
+    if [[ -f "$artifacts/companion-device.log" ]]; then tail -45 "$artifacts/companion-device.log"; fi
     android logcat -d > "$artifacts/logcat.txt" || true
     android exec-out screencap -p > "$artifacts/failure.png" || true
   fi
@@ -49,9 +49,9 @@ fi
 # Full lifecycle checks use the test's real native service. No release code
 # receives these fixture flags or the emulator's preconfigured grants.
 logs="$artifacts/companion-device.log"
-android logcat -T 1 -v raw -s flutter:I > "$logs" &
-log_pid=$!
-run_test --dart-define=SODU_OVERLAY_EXTERNAL=true &
+# The integration-test binding forwards debugPrint to the host test reporter.
+# These stage messages do not go to logcat on a hosted Android emulator.
+run_test --dart-define=SODU_OVERLAY_EXTERNAL=true --reporter expanded > "$logs" 2>&1 &
 fixture_pid=$!
 
 stage() {
