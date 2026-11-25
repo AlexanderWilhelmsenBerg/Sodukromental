@@ -619,6 +619,32 @@ class HatchPrice {
   int get hashCode => Object.hash(dna, rna);
 }
 
+class CreatureDraft {
+  const CreatureDraft({
+    required this.commandId,
+    required this.recipe,
+    required this.reviewing,
+  });
+
+  final String commandId;
+  final CreatureRecipe recipe;
+  final bool reviewing;
+
+  factory CreatureDraft.fromJson(Map<String, dynamic> json) => CreatureDraft(
+    commandId: json['commandId'] as String,
+    recipe: CreatureRecipe.fromJson(
+      Map<String, dynamic>.from(json['recipe'] as Map),
+    ),
+    reviewing: json['reviewing'] as bool? ?? false,
+  );
+
+  Map<String, dynamic> toJson() => {
+    'commandId': commandId,
+    'recipe': recipe.toJson(),
+    'reviewing': reviewing,
+  };
+}
+
 class CreatureAppearance {
   CreatureAppearance({
     required Iterable<int> palette,
@@ -825,6 +851,7 @@ enum CompanionWaypoint { home, library, profile }
 
 class CompanionMemory {
   final _contributions = <String, TaskKind>{};
+  final _completedTasks = <String, TaskKind>{};
   final _sharedClears = <String>{};
   final _encouragements = <String>{};
   final _phrases = <TaughtPhrase>[];
@@ -850,6 +877,10 @@ class CompanionMemory {
     _contributions[_key(runId, encounterId)] = task;
   }
 
+  void recordTask(Object runId, Object encounterId, TaskKind task) {
+    _completedTasks[_key(runId, encounterId)] = task;
+  }
+
   bool recordClear(Object runId, Object encounterId) {
     final key = _key(runId, encounterId);
     return _contributions.containsKey(key) && _sharedClears.add(key);
@@ -857,7 +888,7 @@ class CompanionMemory {
 
   bool encourage(Object runId, Object encounterId) {
     final key = _key(runId, encounterId);
-    final task = _contributions[key];
+    final task = _completedTasks[key] ?? _contributions[key];
     if (task == null || !_encouragements.add(key)) return false;
     preferredTask = task;
     return true;
@@ -925,10 +956,8 @@ class CompanionMemory {
       ..preferredTask = TaskKind.values.asNameMap()[json['preferredTask']]
       .._nextPhraseId = json['nextPhraseId'] as int? ?? 1
       .._lastEchoMs = json['lastEchoMs'] as int?;
-    for (final entry in (json['contributions'] as Map? ?? const {}).entries) {
-      final task = TaskKind.values.asNameMap()[entry.value];
-      if (task != null) memory._contributions[entry.key as String] = task;
-    }
+    memory._contributions.addAll(_savedTasks(json['contributions']));
+    memory._completedTasks.addAll(_savedTasks(json['completedTasks']));
     memory._sharedClears.addAll(
       (json['sharedClears'] as List? ?? const []).cast<String>(),
     );
@@ -943,6 +972,13 @@ class CompanionMemory {
     return memory;
   }
 
+  static Map<String, TaskKind> _savedTasks(Object? value) => {
+    if (value is Map)
+      for (final entry in value.entries)
+        if (TaskKind.values.asNameMap()[entry.value] case final TaskKind task)
+          entry.key as String: task,
+  };
+
   Map<String, dynamic> toJson() => {
     'retained': retained,
     'muted': muted,
@@ -951,6 +987,9 @@ class CompanionMemory {
     'preferredTask': preferredTask?.name,
     'contributions': {
       for (final entry in _contributions.entries) entry.key: entry.value.name,
+    },
+    'completedTasks': {
+      for (final entry in _completedTasks.entries) entry.key: entry.value.name,
     },
     'sharedClears': _sharedClears.toList(),
     'encouragements': _encouragements.toList(),

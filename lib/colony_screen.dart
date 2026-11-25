@@ -493,6 +493,8 @@ class _ColonyScreenState extends State<ColonyScreen> {
               .firstOrNull
               ?.cells
         : null;
+    final reaction = run.reaction;
+    final crew = _reactionCrew(reaction);
     final game = SudokuBoardView(
       key: ValueKey(board.id),
       size: board.size,
@@ -526,6 +528,20 @@ class _ColonyScreenState extends State<ColonyScreen> {
             child: Stack(
               children: [
                 game,
+                if (reaction != null &&
+                    reaction.index >= 0 &&
+                    run.visible.contains(reaction.index) &&
+                    crew.isNotEmpty)
+                  Positioned.fill(
+                    child: _CellReaction(
+                      key: ValueKey('reaction-${reaction.dueAt}'),
+                      boardSize: board.size,
+                      index: reaction.index,
+                      crew: crew,
+                      cheer: reaction.kind == ReactionKind.flock,
+                      reducedMotion: reducedMotion,
+                    ),
+                  ),
                 if (!reducedMotion && wormPath != null)
                   Positioned.fill(
                     child: BoardMoment(
@@ -554,6 +570,21 @@ class _ColonyScreenState extends State<ColonyScreen> {
 
   void _setDragging(bool dragging) {
     _dragging = dragging;
+  }
+
+  List<Creature> _reactionCrew(CreatureReaction? reaction) {
+    if (reaction == null) return const [];
+    final busy = run.jobs.map((job) => job.workerId).toSet();
+    return run.creatures
+        .where(
+          (creature) =>
+              !busy.contains(creature.id) &&
+              (creature.id == reaction.workerId ||
+                  reaction.kind == ReactionKind.flock &&
+                      creature.favorite == reaction.digit),
+        )
+        .take(4)
+        .toList();
   }
 
   Widget _tray() {
@@ -647,6 +678,18 @@ class _ColonyScreenState extends State<ColonyScreen> {
                 ),
             ],
           ),
+          if (run.reaction case final CreatureReaction reaction
+              when reaction.index < 0)
+            if (_reactionCrew(reaction).isNotEmpty)
+              _TrayReaction(
+                key: ValueKey('tray-reaction-${reaction.dueAt}'),
+                crew: _reactionCrew(reaction),
+                digit: reaction.digit,
+                cheer: reaction.kind == ReactionKind.flock,
+                reducedMotion:
+                    widget.reducedMotion ||
+                    MediaQuery.disableAnimationsOf(context),
+              ),
           if (board.gravity) _gravityControls(),
         ],
       ),
@@ -809,6 +852,11 @@ class _ColonyScreenState extends State<ColonyScreen> {
                   );
                 }),
         ),
+        if (!run.completed && board.finale)
+          OutlinedButton(
+            onPressed: _settlement,
+            child: const Text('Build the Meeting Hall'),
+          ),
         if (run.completed)
           OutlinedButton(
             onPressed: _prestige,
@@ -847,7 +895,7 @@ class _ColonyScreenState extends State<ColonyScreen> {
     final pose = firstOffer != null
         ? CreaturePose.carry
         : trip != null
-        ? CreaturePose.travel
+        ? CreaturePose.carry
         : reactionText != null
         ? reaction?.kind.name == 'flock'
               ? CreaturePose.cheer
@@ -868,13 +916,32 @@ class _ColonyScreenState extends State<ColonyScreen> {
               _OfferSprite(
                 offer: firstOffer,
                 onSelect: _selectOffer,
-                onDrag: _setDragging,
-                child: CreatureSprite(
-                  creature: creature,
-                  size: 68,
-                  pose: pose,
-                  cargo: firstOffer?.digit.toString(),
+                onDrag: (dragging) {
+                  _setDragging(dragging);
+                  if (firstOffer != null) {
+                    if (dragging) _change(() => run.holdOffer(firstOffer.id));
+                    if (!dragging && _offer != firstOffer.id)
+                      _change(() => run.holdOffer(null));
+                  }
+                },
+                child: _WorkerTrip(
+                  trip: trip?.id,
                   reducedMotion: reducedMotion,
+                  child: CreatureSprite(
+                    creature: creature,
+                    size: 68,
+                    pose: pose,
+                    cargo:
+                        firstOffer?.digit.toString() ??
+                        switch (trip?.kind) {
+                          TaskKind.building =>
+                            trip!.glyphs.map((glyph) => glyph.glyph).join(),
+                          TaskKind.torch => '✶',
+                          TaskKind.digit => trip!.digit?.toString(),
+                          null => null,
+                        },
+                    reducedMotion: reducedMotion,
+                  ),
                 ),
               ),
               const SizedBox(width: 8),
@@ -914,6 +981,16 @@ class _ColonyScreenState extends State<ColonyScreen> {
                 TextButton(
                   onPressed: () => widget.onOpenProfile!(creature),
                   child: const Text('Profile'),
+                ),
+              for (final project in run.projects.where(
+                (item) => run.buildings.contains(item.id),
+              ))
+                Tooltip(
+                  message: '${project.name} built',
+                  child: SettlementProjectPreview(
+                    glyphs: run.buildingGlyphs[project.id]!,
+                    complete: true,
+                  ),
                 ),
               if (grown || run.cleared)
                 TextButton.icon(
@@ -1231,7 +1308,25 @@ class _ColonyScreenState extends State<ColonyScreen> {
                 _map();
               },
             ),
-          if (run.cleared || grown)
+          if (run.libraryChallenge)
+            ListTile(
+              leading: const Icon(Icons.arrow_back),
+              title: const Text('Return to campaign'),
+              onTap: () {
+                Navigator.pop(sheet);
+                _change(() => run.returnToCampaign());
+              },
+            ),
+          if (run.learnedRules.isNotEmpty || run.learnedFog.isNotEmpty)
+            ListTile(
+              leading: const Icon(Icons.menu_book_outlined),
+              title: const Text('Rule Almanac'),
+              onTap: () {
+                Navigator.pop(sheet);
+                _almanac();
+              },
+            ),
+          if (run.producerLimit > 0)
             ListTile(
               leading: const Icon(Icons.biotech),
               title: const Text('Digit production'),
@@ -1261,6 +1356,49 @@ class _ColonyScreenState extends State<ColonyScreen> {
       ),
     );
   }
+
+  void _almanac() => _sheet<void>(
+    'Rule Almanac',
+    (_) => Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final rule in run.learnedRules)
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text(rule.label),
+            subtitle: Text(rule.explanation),
+            trailing: run.masteredRules.contains(rule)
+                ? const Icon(Icons.verified_outlined, semanticLabel: 'Mastered')
+                : null,
+          ),
+        if (run.learnedFog.isNotEmpty)
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Fog of war'),
+            subtitle: Text(
+              run.learnedFog
+                  .map(
+                    (fog) => switch (fog) {
+                      FogKind.halo => 'Halo',
+                      FogKind.trail => 'Trail',
+                      FogKind.linked => 'Linked torches',
+                      _ => '',
+                    },
+                  )
+                  .join(' · '),
+            ),
+          ),
+        for (final expedition in campaignBoards.where(
+          (item) => item.expedition && run.clearedBoards.contains(item.id),
+        ))
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text(expedition.title),
+            subtitle: const Text('Expedition cleared'),
+          ),
+      ],
+    ),
+  );
 
   void _confirmRetry() async {
     final accepted = await showDialog<bool>(
@@ -1299,6 +1437,25 @@ class _ColonyScreenState extends State<ColonyScreen> {
     var charter = Charter.standard;
     String? companion = run.companionChoice;
     final upgrades = <LegacyUpgrade, int>{};
+    final total = run.legacy + run.prestigePayout;
+    final companions = {
+      for (final creature in run.creatures) creature.id: creature,
+      if (run.companion case final Creature creature) creature.id: creature,
+    };
+    int cost(LegacyUpgrade upgrade, int rank) {
+      final current = run.legacyUpgrades[upgrade] ?? 0;
+      return run
+          .legacyUpgradeCosts(upgrade)
+          .skip(current)
+          .take(rank - current)
+          .fold(0, (sum, price) => sum + price);
+    }
+
+    int spent() => upgrades.entries.fold(
+      0,
+      (sum, entry) => sum + cost(entry.key, entry.value),
+    );
+    if (!companions.containsKey(companion)) companion = null;
     _sheet<void>(
       'Start a new colony',
       (sheet) => StatefulBuilder(
@@ -1342,7 +1499,7 @@ class _ColonyScreenState extends State<ColonyScreen> {
               decoration: const InputDecoration(labelText: 'Keep a companion'),
               items: [
                 const DropdownMenuItem(value: '', child: Text('No companion')),
-                for (final creature in run.creatures)
+                for (final creature in companions.values)
                   DropdownMenuItem(
                     value: creature.id,
                     child: Text(creature.name),
@@ -1352,27 +1509,54 @@ class _ColonyScreenState extends State<ColonyScreen> {
                   update(() => companion = value == '' ? null : value),
             ),
             const SizedBox(height: 8),
+            Text(
+              '${total - spent()} Legacy available',
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
             for (final upgrade in LegacyUpgrade.values)
-              CheckboxListTile(
-                contentPadding: EdgeInsets.zero,
-                value: upgrades.containsKey(upgrade),
-                onChanged: (value) => update(() {
-                  if (value == true) {
-                    upgrades[upgrade] = 1;
-                  } else {
-                    upgrades.remove(upgrade);
-                  }
-                }),
-                title: Text(switch (upgrade.name) {
-                  'shorterRoutes' => 'Shorter routes',
-                  'warmStart' => 'Warm start',
-                  _ => 'Extra nest',
-                }),
-                subtitle: Text(switch (upgrade.name) {
-                  'shorterRoutes' => '2 Legacy for the first rank',
-                  'warmStart' => '2 Legacy',
-                  _ => '3 Legacy',
-                }),
+              Builder(
+                builder: (_) {
+                  final current = run.legacyUpgrades[upgrade] ?? 0;
+                  final prices = run.legacyUpgradeCosts(upgrade);
+                  final name = switch (upgrade) {
+                    LegacyUpgrade.shorterRoutes => 'Shorter routes',
+                    LegacyUpgrade.warmStart => 'Warm start',
+                    LegacyUpgrade.extraNest => 'Extra nest',
+                  };
+                  final selected = upgrades[upgrade] ?? current;
+                  return ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: Text(name),
+                    subtitle: Text(switch (upgrade) {
+                      LegacyUpgrade.shorterRoutes =>
+                        'Rank $selected · ${selected * 10}% faster digit trips',
+                      LegacyUpgrade.warmStart => 'An RNA producer after 4×4.',
+                      LegacyUpgrade.extraNest =>
+                        'One more housing slot after 5×5.',
+                    }),
+                    trailing: DropdownButton<int>(
+                      value: selected,
+                      items: [
+                        for (var rank = current; rank <= prices.length; rank++)
+                          DropdownMenuItem(
+                            value: rank,
+                            enabled:
+                                cost(upgrade, rank) <=
+                                total - spent() + cost(upgrade, selected),
+                            child: Text(
+                              rank == current
+                                  ? 'Keep rank $rank'
+                                  : 'Rank $rank · ${cost(upgrade, rank)}',
+                            ),
+                          ),
+                      ],
+                      onChanged: (rank) {
+                        if (rank != null)
+                          update(() => upgrades[upgrade] = rank);
+                      },
+                    ),
+                  );
+                },
               ),
             _PrimaryAction(
               label: 'Archive and begin',
@@ -1431,6 +1615,23 @@ class ColonyManagementScreen extends StatefulWidget {
 class _ColonyManagementScreenState extends State<ColonyManagementScreen> {
   Campaign get run => widget.campaign;
   String? _message;
+  Timer? _refresh;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.embedded) {
+      _refresh = Timer.periodic(const Duration(milliseconds: 400), (_) {
+        if (mounted) setState(() {});
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _refresh?.cancel();
+    super.dispose();
+  }
 
   void _change(VoidCallback change) {
     setState(change);
@@ -1506,12 +1707,16 @@ class _ColonyManagementScreenState extends State<ColonyManagementScreen> {
                         ? null
                         : () => widget.onOpenProfile!(creature),
                     trailing: designer
-                        ? PopupMenuButton<TaskKind?>(
+                        ? PopupMenuButton<String>(
                             tooltip: 'Assign ${creature.name}',
                             icon: const Icon(Icons.assignment_outlined),
-                            onSelected: (task) => _change(() {
+                            onSelected: (value) => _change(() {
+                              final task = TaskKind.values
+                                  .where((job) => job.name == value)
+                                  .firstOrNull;
                               run.assign(creature.id, task);
-                              _message = '${creature.name}: ${_jobName(task)}';
+                              _message =
+                                  '${creature.name} assigned to ${_jobName(task).toLowerCase()}.';
                             }),
                             itemBuilder: (_) => [
                               for (final task in <TaskKind?>[
@@ -1519,7 +1724,7 @@ class _ColonyManagementScreenState extends State<ColonyManagementScreen> {
                                 ...TaskKind.values,
                               ])
                                 PopupMenuItem(
-                                  value: task,
+                                  value: task?.name ?? 'flexible',
                                   child: Text(_jobName(task)),
                                 ),
                             ],
@@ -1575,6 +1780,17 @@ class _ColonyManagementScreenState extends State<ColonyManagementScreen> {
                         SettlementProjectPreview(
                           glyphs: run.buildingGlyphs[project.id]!,
                           complete: true,
+                        ),
+                      if (!run.buildings.contains(project.id) &&
+                          run.stockedGlyphs.isNotEmpty)
+                        SettlementProjectPreview(
+                          glyphs: [
+                            for (final role in project.requirements.keys)
+                              ...run.stockedGlyphs
+                                  .where((glyph) => glyph.role == role)
+                                  .take(project.requirements[role]!),
+                          ],
+                          complete: false,
                         ),
                       if (!run.buildings.contains(project.id))
                         SettlementMaterialNotice(
@@ -2168,4 +2384,147 @@ class _OfferSprite extends StatelessWidget {
       child: GestureDetector(onTap: () => onSelect(active), child: child),
     );
   }
+}
+
+class _WorkerTrip extends StatelessWidget {
+  const _WorkerTrip({
+    required this.trip,
+    required this.reducedMotion,
+    required this.child,
+  });
+  final String? trip;
+  final bool reducedMotion;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    if (trip == null || reducedMotion) return child;
+    return TweenAnimationBuilder<double>(
+      key: ValueKey(trip),
+      tween: Tween(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 1200),
+      child: child,
+      builder: (context, progress, sprite) => Transform.translate(
+        offset: Offset(math.sin(progress * math.pi) * 13, 0),
+        child: sprite,
+      ),
+    );
+  }
+}
+
+class _CellReaction extends StatelessWidget {
+  const _CellReaction({
+    super.key,
+    required this.boardSize,
+    required this.index,
+    required this.crew,
+    required this.cheer,
+    required this.reducedMotion,
+  });
+  final int boardSize;
+  final int index;
+  final List<Creature> crew;
+  final bool cheer;
+  final bool reducedMotion;
+
+  @override
+  Widget build(BuildContext context) => IgnorePointer(
+    child: ExcludeSemantics(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final step = constraints.maxWidth / boardSize;
+          return Stack(
+            children: [
+              for (final (sequence, creature) in crew.indexed)
+                Positioned(
+                  left:
+                      (index % boardSize + (sequence.isEven ? .02 : .63)) *
+                      step,
+                  top: (index ~/ boardSize + (sequence < 2 ? .70 : .00)) * step,
+                  child: _ReactionSprite(
+                    creature: creature,
+                    extent: step * .32,
+                    cheer: cheer,
+                    reducedMotion: reducedMotion,
+                  ),
+                ),
+            ],
+          );
+        },
+      ),
+    ),
+  );
+}
+
+class _TrayReaction extends StatelessWidget {
+  const _TrayReaction({
+    super.key,
+    required this.crew,
+    required this.digit,
+    required this.cheer,
+    required this.reducedMotion,
+  });
+  final List<Creature> crew;
+  final int digit;
+  final bool cheer;
+  final bool reducedMotion;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    label: cheer
+        ? '${crew.length} helpers gathered for $digit'
+        : 'A helper inspected $digit',
+    child: ExcludeSemantics(
+      child: Wrap(
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          for (final creature in crew)
+            _ReactionSprite(
+              creature: creature,
+              extent: 30,
+              cheer: cheer,
+              reducedMotion: reducedMotion,
+            ),
+          Text(
+            '$digit',
+            style: const TextStyle(
+              fontFamily: Hum.digitFont,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _ReactionSprite extends StatelessWidget {
+  const _ReactionSprite({
+    required this.creature,
+    required this.extent,
+    required this.cheer,
+    required this.reducedMotion,
+  });
+  final Creature creature;
+  final double extent;
+  final bool cheer;
+  final bool reducedMotion;
+
+  @override
+  Widget build(BuildContext context) => TweenAnimationBuilder<double>(
+    tween: Tween(begin: 1, end: 0),
+    duration: reducedMotion ? Duration.zero : const Duration(milliseconds: 340),
+    curve: Curves.easeOutCubic,
+    child: CreatureSprite(
+      key: ValueKey('reacting-${creature.id}'),
+      creature: creature,
+      size: extent,
+      reducedMotion: reducedMotion,
+      pose: cheer ? CreaturePose.cheer : CreaturePose.puzzled,
+    ),
+    builder: (context, travel, child) => Transform.translate(
+      offset: Offset(-extent * travel, extent * travel),
+      child: child,
+    ),
+  );
 }

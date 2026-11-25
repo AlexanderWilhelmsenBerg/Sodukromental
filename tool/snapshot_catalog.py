@@ -51,9 +51,11 @@ def page(number):
     target = CACHE / f'{number}.json'
     if target.exists():
         return json.loads(target.read_text())
-    req = urllib.request.Request(f'{BASE}?listname=sudokus&chlang=en&start={number*20}',
-                                 headers={'User-Agent': 'Sodukromental/0.1 (public Sudoku listing metadata)'})
-    for attempt in range(5):
+    for attempt in range(12):
+        query = (f'listname=sudokus&chlang=en&start={number*20}' if attempt % 2 == 0
+                 else f'start={number*20}&listname=sudokus&chlang=en')
+        req = urllib.request.Request(f'{BASE}?{query}',
+                                     headers={'User-Agent': 'Sodukromental/0.1 (public Sudoku listing metadata)'})
         try:
             with urllib.request.urlopen(req, timeout=30) as response:
                 # The portal declares UTF-8 in its HTML.
@@ -61,9 +63,9 @@ def page(number):
             target.write_text(json.dumps(rows, ensure_ascii=False))
             return rows
         except (OSError, ValueError) as err:
-            if attempt == 4: raise
+            if attempt == 11: raise
             retry = err.headers.get('Retry-After','') if isinstance(err, urllib.error.HTTPError) else ''
-            time.sleep(max(int(retry) if retry.isdigit() else 0, 2**(attempt+1)))
+            time.sleep(max(int(retry) if retry.isdigit() else 0, min(45, 2**(attempt+1))))
 
 def publish(entries):
     part = OUT.with_suffix('.part')
@@ -73,6 +75,7 @@ def publish(entries):
 def main():
     index = 0
     entries = {}
+    baseline = len(json.loads(OUT.read_text())) if OUT.exists() else 0
     # Two outstanding metadata pages at most. Saved pages allow a restart after interruption.
     with concurrent.futures.ThreadPoolExecutor(2) as pool:
         while True:
@@ -86,8 +89,9 @@ def main():
                     print(f'Final page {index+1}, {len(rows)} rows. Indexed {len(entries)} distinct portal IDs.',flush=True)
                     return
                 index += 1
-            if index % 20 == 0 or index == 2:
+            if (index % 20 == 0 or index == 2) and len(entries) >= baseline:
                 publish(entries)
                 print(f'{index} pages, {len(entries)} distinct IDs', flush=True)
-            time.sleep(.15)
+            if not all((CACHE / f"{n}.json").exists() for n in range(index,index+2)):
+                time.sleep(.15)
 if __name__ == '__main__': main()

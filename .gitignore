@@ -18,3 +18,7 @@ android/local.properties
 *.apk
 *.aab
 .DS_Store
+
+__pycache__/
+apk-artifact/
+android-diagnostics/

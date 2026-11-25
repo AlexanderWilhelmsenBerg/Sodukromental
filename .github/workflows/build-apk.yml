@@ -49,6 +49,9 @@ jobs:
           fi
           flutter build apk --debug --no-pub
           bash .github/workflows/inspect-apk.sh debug
+          current_code="$(awk '/^version:/ {split($2, v, "+"); print v[2]}' pubspec.yaml)"
+          flutter build apk --debug --no-pub --build-number="$((current_code + 1))"
+          cp build/app/outputs/flutter-apk/app-debug.apk "$RUNNER_TEMP/upgrade-check.apk"
       - uses: ./.github/actions/emulator-kvm
       - name: Install and launch the exact debug artifact
         uses: reactivecircus/android-emulator-runner@v2
@@ -57,7 +60,7 @@ jobs:
           arch: x86_64
           target: default
           disable-animations: true
-          script: bash .github/workflows/test-android.sh apk-artifact/*-debug-android.apk
+          script: bash .github/workflows/test-android.sh apk-artifact/*-debug-android.apk "$RUNNER_TEMP/upgrade-check.apk"
       - name: Save device failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v4

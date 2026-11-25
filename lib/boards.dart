@@ -366,11 +366,88 @@ class BoardSpec {
     for (var digit = 1; digit <= size; digit++) {
       if (used & (1 << digit) != 0) continue;
       entries[index] = digit;
-      if (relevant.every((rule) => rule.allows(entries, size, regions)))
+      if (relevant.every(
+        (rule) => _candidateAllowed(rule, entries, index, digit),
+      )) {
         result.add(digit);
+      }
     }
     entries[index] = original;
     return result;
+  }
+
+  bool _candidateAllowed(
+    VariantRule rule,
+    List<int> entries,
+    int index,
+    int digit,
+  ) {
+    if (rule.kind == RuleKind.palindrome) {
+      final offset = rule.cells.indexOf(index);
+      final mirror = rule.cells[rule.cells.length - offset - 1];
+      if (entries[mirror] == 0 &&
+          peers[mirror].any((peer) => entries[peer] == digit)) {
+        return false;
+      }
+    }
+    return rule.allows(entries, size, regions);
+  }
+
+  ({int index, int digit, String reason})? nextDeduction(
+    List<int> entries, {
+    Set<int>? visible,
+  }) {
+    final active = visible ?? indices.toSet();
+    final grid = [
+      for (final index in indices) active.contains(index) ? entries[index] : 0,
+    ];
+    final constraints = visible == null ? rules : visibleRules(active);
+    final options = {
+      for (final index in indices)
+        if (active.contains(index) && grid[index] == 0)
+          index: candidates(grid, index, constraints: constraints),
+    };
+    if (options.values.any((digits) => digits.isEmpty)) return null;
+    for (final choice in options.entries) {
+      if (choice.value.length == 1) {
+        return (
+          index: choice.key,
+          digit: choice.value.single,
+          reason: 'only digit allowed by the visible clues',
+        );
+      }
+    }
+    final units = <(String, Iterable<int>)>[
+      for (var unit = 0; unit < size; unit++) ...[
+        ('row ${unit + 1}', indices.where((index) => index ~/ size == unit)),
+        ('column ${unit + 1}', indices.where((index) => index % size == unit)),
+        (
+          'region ${unit + 1}',
+          indices.where((index) => regions[index] == unit),
+        ),
+      ],
+      for (final rule in constraints.where(
+        (item) => item.kind == RuleKind.diagonal,
+      ))
+        ('the marked diagonal', rule.cells),
+    ];
+    for (final (label, unit) in units) {
+      if (!unit.every(active.contains)) continue;
+      for (var digit = 1; digit <= size; digit++) {
+        if (unit.any((index) => grid[index] == digit)) continue;
+        final eligible = unit
+            .where((index) => options[index]?.contains(digit) ?? false)
+            .toList();
+        if (eligible.length == 1) {
+          return (
+            index: eligible.single,
+            digit: digit,
+            reason: 'only place for $digit in $label',
+          );
+        }
+      }
+    }
+    return null;
   }
 
   int countSolutions({

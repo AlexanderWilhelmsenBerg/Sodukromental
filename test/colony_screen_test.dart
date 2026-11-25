@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sodukromental/board_view.dart';
 import 'package:sodukromental/campaign.dart';
 import 'package:sodukromental/colony_screen.dart';
+import 'package:sodukromental/creatures.dart';
 import 'package:sodukromental/tilt_input.dart';
 
 void main() {
@@ -83,6 +84,58 @@ void main() {
       expect(find.text('Request digits'), findsOneWidget);
     },
   );
+
+  testWidgets('two matching, idle helpers flock at the tray', (tester) async {
+    final start = DateTime.utc(2026);
+    final amoeba = Creature.amoeba(1).toJson();
+    final second = Creature.amoeba(2).toJson()
+      ..['id'] = 'next-helper'
+      ..['isAmoeba'] = false;
+    final saved = Campaign(now: start).toJson()
+      ..['clears'] = ['opening', 'growth-5']
+      ..['creatures'] = [amoeba, second];
+    final run = Campaign.fromJson(saved);
+    expect(run.openBoard('growth-6'), isTrue);
+    run.tick(start.add(const Duration(milliseconds: 100)));
+    expect(run.reaction?.kind, ReactionKind.flock);
+    expect(run.reaction?.index, -1);
+    final semantics = tester.ensureSemantics();
+    await tester.pumpWidget(_app(run));
+    expect(find.byKey(ValueKey('reacting-${amoeba['id']}')), findsOneWidget);
+    expect(find.byKey(const ValueKey('reacting-next-helper')), findsOneWidget);
+    expect(find.bySemanticsLabel('2 helpers gathered for 4'), findsOneWidget);
+    semantics.dispose();
+  });
+
+  testWidgets('dense grid offers linear placement at 320 dp', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(320, 1150);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final saved = Campaign().toJson()
+      ..['clears'] = campaignBoards.take(6).map((board) => board.id).toList();
+    final run = Campaign.fromJson(saved);
+    expect(run.openBoard('renban'), isTrue);
+    await tester.pumpWidget(_app(run, scale: 1.6));
+    final empty = run.cells.indexOf(0);
+    expect(empty, lessThan(run.board.size));
+    final digit = run.tray.keys.first;
+    final tile = find.byKey(ValueKey('tray-$digit'));
+    await tester.ensureVisible(tile);
+    await tester.tap(tile);
+    await tester.pumpAndSettle();
+    final selector = find.text('Select square');
+    await tester.ensureVisible(selector);
+    await tester.tap(selector);
+    await tester.pumpAndSettle();
+    final target = find.widgetWithText(ListTile, 'Column ${empty + 1}');
+    expect(tester.getSize(target).height, greaterThanOrEqualTo(48));
+    await tester.ensureVisible(target);
+    await tester.tap(target);
+    await tester.pumpAndSettle();
+    expect(run.cells[empty], digit);
+    expect(tester.takeException(), isNull);
+  });
 
   test('tilt requires stable dominant readings and covers all directions', () {
     final start = DateTime.utc(2026);

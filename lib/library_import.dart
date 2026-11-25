@@ -376,7 +376,7 @@ bool _classicRules(String rules, LibraryEntry entry) {
   final norm = rules.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
   return norm.isEmpty ||
       RegExp(
-        r'^(?:(?:normal|standard|classic) sudoku rules(?: apply)?[.!]?|(?:fill|place) (?:each|the) (?:row|digits)[0-9a-z \-×,–]+(?:each|once)[.!]?)$',
+        r'^(?:(?:normal|standard|classic)(?: [4-9]\s*[x×]\s*[4-9])? sudoku rules(?: apply)?[.!]?|(?:es gelten die )?normalen? sudoku-regeln[.!]?|(?:fill|place) (?:each|the) (?:row|digits)[0-9a-z \-×,–]+(?:each|once)[.!]?)$',
       ).hasMatch(norm);
 }
 

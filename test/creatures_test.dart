@@ -146,6 +146,16 @@ void main() {
     expect(CompanionMemory.fromJson(memory.toJson()).toJson(), memory.toJson());
   });
 
+  test('optional work can be encouraged without granting a shared clear', () {
+    final memory = CompanionMemory()
+      ..recordTask(7, 'letter-work', TaskKind.building);
+    final restored = CompanionMemory.fromJson(memory.toJson());
+    expect(restored.recordClear(7, 'letter-work'), isFalse);
+    expect(restored.encourage(7, 'letter-work'), isTrue);
+    expect(restored.preferredTask, TaskKind.building);
+    expect(restored.encourage(7, 'letter-work'), isFalse);
+  });
+
   test(
     'speech throttles on resume and outside phrases require individual consent',
     () {
@@ -280,7 +290,11 @@ void main() {
     expect(find.text('Amoeba: Watch the 4'), findsOneWidget);
     expect(creature.memory.approvedOutsidePhrases, isEmpty);
     final delete = find.byTooltip('Delete phrase');
-    await tester.scrollUntilVisible(delete, 100);
+    await tester.scrollUntilVisible(
+      delete,
+      100,
+      scrollable: find.byType(Scrollable).first,
+    );
     await tester.ensureVisible(delete);
     await tester.pumpAndSettle();
     await tester.tap(delete);
@@ -315,6 +329,113 @@ void main() {
     expect(choices, ['nest-support-t', 'nest-support-i']);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'creator restores a reviewed recipe and retries its saved command',
+    (tester) async {
+      final saved = CreatureDraft(
+        commandId: 'hatch-original',
+        recipe: CreatureRecipe.starter().withChoice(growthById['quadrupedal']!),
+        reviewing: true,
+      );
+      final restored = CreatureDraft.fromJson(
+        jsonDecode(jsonEncode(saved.toJson())) as Map<String, dynamic>,
+      );
+      String? command;
+      CreatureDraft? current;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: CreatureCreatorScreen(
+            milestone: GrowthMilestone.five,
+            quote: (count) => HatchPrice.quote(1, count),
+            onHatch: (id, recipe, quoted) {
+              command = id;
+              expect(recipe.choices[GrowthGroup.locomotion], 'quadrupedal');
+              expect(quoted, const HatchPrice(4, 8));
+              return null;
+            },
+            dna: 5,
+            rna: 12,
+            occupied: 1,
+            housing: 2,
+            reducedMotion: true,
+            initialDraft: restored,
+            onDraftChanged: (draft) => current = draft,
+          ),
+        ),
+      );
+      expect(find.text('Review hatch'), findsOneWidget);
+      expect(current?.toJson(), saved.toJson());
+      final hatch = find.text('Hatch');
+      await tester.scrollUntilVisible(hatch, 100);
+      await tester.ensureVisible(hatch);
+      await tester.pumpAndSettle();
+      await tester.tap(hatch);
+      expect(command, saved.commandId);
+    },
+  );
+
+  testWidgets(
+    'a refused Android overlay grant leaves the companion in the game',
+    (tester) async {
+      final creature = Creature.amoeba(32);
+      creature.memory.retained = true;
+      for (var puzzle = 0; puzzle < 6; puzzle++) {
+        creature.memory.recordContribution(0, puzzle, TaskKind.digit);
+        creature.memory.recordClear(0, puzzle);
+      }
+      final calls = <String>[];
+      final messenger = tester.binding.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(CreatureRoaming.channel, (call) async {
+        calls.add(call.method);
+        return call.method == 'requestOverlayPermission';
+      });
+      addTearDown(
+        () => messenger.setMockMethodCallHandler(CreatureRoaming.channel, null),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData(platform: TargetPlatform.android),
+          home: CreatureProfileScreen(
+            creature: creature,
+            selectedToKeep: true,
+            onKeep: (_) {},
+            onChanged: () {},
+            reducedMotion: true,
+          ),
+        ),
+      );
+      final allow = find.text('Let it roam');
+      await tester.scrollUntilVisible(
+        allow,
+        100,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.ensureVisible(allow);
+      await tester.pumpAndSettle();
+      await tester.tap(allow);
+      await tester.pumpAndSettle();
+      expect(creature.memory.outsideOptIn, isTrue);
+      for (final state in [
+        AppLifecycleState.inactive,
+        AppLifecycleState.hidden,
+        AppLifecycleState.paused,
+        AppLifecycleState.hidden,
+        AppLifecycleState.inactive,
+        AppLifecycleState.resumed,
+      ]) {
+        tester.binding.handleAppLifecycleStateChanged(state);
+      }
+      await tester.pumpAndSettle();
+      expect(creature.memory.outsideOptIn, isFalse);
+      expect(calls, contains('requestOverlayPermission'));
+      expect(calls, isNot(contains('startRoaming')));
+      expect(
+        find.text('Your companion will stay in the game.'),
+        findsOneWidget,
+      );
+    },
+  );
 
   testWidgets(
     'overlay payload carries only the phrases allowed for that outing',

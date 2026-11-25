@@ -62,6 +62,7 @@ const libraryRules = [
     'Thermometer',
     'Digits increase from the bulb to the tip.',
     ['thermo', 'thermometerlinie'],
+    ['4054'],
   ),
   LibraryRule(
     'whispers',
@@ -234,6 +235,7 @@ class LibraryEntry {
     this.diagram,
     this.revision = '',
     this.language = 'en',
+    this.requestedLanguage,
     this.languages = const [],
     this.videos = const [],
     this.size,
@@ -257,6 +259,7 @@ class LibraryEntry {
   final String? diagram;
   final String revision;
   final String language;
+  final String? requestedLanguage;
   final List<String> languages;
   final List<LibraryVideo> videos;
   final int? size;
@@ -296,6 +299,7 @@ class LibraryEntry {
     'diagram': diagram,
     'revision': revision,
     'language': language,
+    'requestedLanguage': requestedLanguage,
     'languages': languages,
     'videos': videos.map((video) => video.toJson()).toList(),
     'size': size,
@@ -320,6 +324,7 @@ class LibraryEntry {
     diagram: json['diagram'] as String?,
     revision: json['revision'] as String? ?? '',
     language: json['language'] as String? ?? 'en',
+    requestedLanguage: json['requestedLanguage'] as String?,
     languages: (json['languages'] as List? ?? const []).cast<String>(),
     videos: (json['videos'] as List? ?? const [])
         .map(

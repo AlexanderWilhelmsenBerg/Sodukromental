@@ -529,6 +529,8 @@ class CreatureCreatorScreen extends StatefulWidget {
     this.oneHelper = false,
     this.reducedMotion = false,
     this.initialRecipe,
+    this.initialDraft,
+    this.onDraftChanged,
   });
 
   final GrowthMilestone milestone;
@@ -546,6 +548,8 @@ class CreatureCreatorScreen extends StatefulWidget {
   final bool oneHelper;
   final bool reducedMotion;
   final CreatureRecipe? initialRecipe;
+  final CreatureDraft? initialDraft;
+  final ValueChanged<CreatureDraft?>? onDraftChanged;
 
   @override
   State<CreatureCreatorScreen> createState() => _CreatureCreatorScreenState();
@@ -553,11 +557,32 @@ class CreatureCreatorScreen extends StatefulWidget {
 
 class _CreatureCreatorScreenState extends State<CreatureCreatorScreen> {
   late CreatureRecipe _recipe =
-      widget.initialRecipe ?? CreatureRecipe.starter();
-  late final String _command = 'hatch-${DateTime.now().microsecondsSinceEpoch}';
+      widget.initialDraft?.recipe ??
+      widget.initialRecipe ??
+      CreatureRecipe.starter();
+  late final String _command =
+      widget.initialDraft?.commandId ??
+      'hatch-${DateTime.now().microsecondsSinceEpoch}';
   CreaturePose _pose = CreaturePose.idle;
-  bool _reviewing = false;
+  late bool _reviewing = widget.initialDraft?.reviewing ?? false;
   String? _message;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _saveDraft();
+    });
+  }
+
+  void _saveDraft() => widget.onDraftChanged?.call(
+    CreatureDraft(commandId: _command, recipe: _recipe, reviewing: _reviewing),
+  );
+
+  void _review(bool reviewing) {
+    setState(() => _reviewing = reviewing);
+    _saveDraft();
+  }
 
   void _change(CreatureRecipe next, {CreaturePose? pose}) {
     setState(() {
@@ -565,6 +590,7 @@ class _CreatureCreatorScreenState extends State<CreatureCreatorScreen> {
       if (pose != null) _pose = pose;
       _message = null;
     });
+    _saveDraft();
   }
 
   void _hatch(HatchPrice quoted) {
@@ -584,6 +610,7 @@ class _CreatureCreatorScreenState extends State<CreatureCreatorScreen> {
       );
       return;
     }
+    widget.onDraftChanged?.call(null);
     Navigator.of(context).pop(creature);
   }
 
@@ -656,7 +683,7 @@ class _CreatureCreatorScreenState extends State<CreatureCreatorScreen> {
             for (final perk in _recipe.perks) Text(perk.label),
             const SizedBox(height: 12),
             OutlinedButton(
-              onPressed: () => setState(() => _reviewing = false),
+              onPressed: () => _review(false),
               child: const Text('Edit growth paths'),
             ),
           ] else ...[
@@ -734,9 +761,7 @@ class _CreatureCreatorScreenState extends State<CreatureCreatorScreen> {
             )
           else
             FilledButton(
-              onPressed: errors.isEmpty
-                  ? () => setState(() => _reviewing = true)
-                  : null,
+              onPressed: errors.isEmpty ? () => _review(true) : null,
               child: const Text('Review hatch'),
             ),
         ],

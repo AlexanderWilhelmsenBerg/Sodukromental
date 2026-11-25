@@ -372,6 +372,19 @@ const reviewedLibraryVideos = <String, LibraryVideo>{
 
 List<LibraryEntry> librarySeedEntries() => [
   LibraryEntry(
+    id: '000UBK',
+    title: 'Classic Sudoku for Beginners',
+    author: 'addie',
+    published: DateTime(2026, 8, 12, 9, 2),
+    difficulty: 1,
+    rating: 81,
+    size: 9,
+    content: 'https://sudokupad.app/9rm19tyycb',
+    diagram:
+        'https://logic-masters.de/Dateien/bild.php?data=fab0e656-51750-33393239362d31',
+  ),
+
+  LibraryEntry(
     id: '000KPF',
     title: 'The Most Beautiful Mathematical Equation',
     author: 'Tobias Brixner',

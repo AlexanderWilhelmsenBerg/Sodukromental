@@ -1307,8 +1307,13 @@ List<BoardMark> _marks(LibraryDownload puzzle) => puzzle.refs.isNotEmpty
           BoardMark(rule.kind.name, rule.cells, rule.target),
       ];
 
-String _language(BuildContext context) =>
-    Localizations.localeOf(context).languageCode == 'de' ? 'de' : 'en';
+String _language(BuildContext context) {
+  final appLanguage = Localizations.localeOf(context).languageCode;
+  final deviceLanguage = View.of(
+    context,
+  ).platformDispatcher.locale.languageCode;
+  return appLanguage == 'de' || deviceLanguage == 'de' ? 'de' : 'en';
+}
 
 Future<void> _external(BuildContext context, Uri link) async {
   var opened = false;

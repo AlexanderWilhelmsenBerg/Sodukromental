@@ -69,6 +69,10 @@ Map<String, dynamic> _saveCampaign(Campaign campaign) => {
       .toList(),
   'learnedRules': campaign._learnedRules.map((item) => item.name).toList(),
   'learnedFog': campaign._learnedFog.map((item) => item.name).toList(),
+  'almanacCrews': {
+    for (final item in campaign._almanacCrews.entries)
+      item.key: Map.of(item.value),
+  },
   'cosmetics': campaign._cosmetics.toList(),
   'archives': campaign._archives.toList(),
 };
@@ -319,6 +323,17 @@ Campaign _restoreCampaign(Map<String, dynamic> json) {
   );
   campaign._cosmetics.addAll(_list<String>(json['cosmetics']));
   campaign._archives.addAll(_maps(json['archives']));
+  for (final item in _map(json['almanacCrews']).entries) {
+    campaign._almanacCrews[item.key] = _map(item.value).cast<String, String>();
+  }
+  for (final id in [
+    ...campaign._cleared,
+    for (final archived in campaign._archives)
+      ..._list<String>(archived['clears']),
+  ]) {
+    if (boardsById.containsKey(id))
+      campaign._almanacCrews.putIfAbsent(id, () => {});
+  }
   return campaign;
 }
 

@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart'
+    show LicenseEntryWithLineBreaks, LicenseRegistry;
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
@@ -18,6 +20,14 @@ import 'updates.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  LicenseRegistry.addLicense(() async* {
+    for (final name in ['PlusJakartaSans', 'JetBrainsMono']) {
+      final terms = await rootBundle.loadString(
+        'assets/fonts/$name-LICENSE.txt',
+      );
+      yield LicenseEntryWithLineBreaks([name], terms);
+    }
+  });
   if (Platform.isAndroid || Platform.isIOS) {
     unawaited(
       SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]),
@@ -184,6 +194,11 @@ class _GameHomeState extends State<GameHome> with WidgetsBindingObserver {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         _autoUpdate();
+        if (player.settings['creatorOpen'] == true &&
+            player.settings['creatorRun'] == run.runId &&
+            run.growthMilestone != GrowthMilestone.opening) {
+          _creator();
+        }
         // Begin indexing the offline library independently of the first board.
         library.ignore();
       }
@@ -256,6 +271,14 @@ class _GameHomeState extends State<GameHome> with WidgetsBindingObserver {
   }
 
   void _creator([CreatureRecipe? initial]) async {
+    final prefs = player.settings;
+    final saved = prefs['creatorDraft'];
+    final draft =
+        initial == null && prefs['creatorRun'] == run.runId && saved is Map
+        ? CreatureDraft.fromJson(Map<String, dynamic>.from(saved))
+        : null;
+    prefs['creatorOpen'] = true;
+    unawaited(_preferences());
     final helper = await Navigator.of(context).push<Creature>(
       MaterialPageRoute(
         builder: (_) => CreatureCreatorScreen(
@@ -271,9 +294,17 @@ class _GameHomeState extends State<GameHome> with WidgetsBindingObserver {
           oneHelper: run.charter == Charter.oneHelper,
           reducedMotion: motion,
           initialRecipe: initial,
+          initialDraft: draft,
+          onDraftChanged: (draft) {
+            prefs['creatorRun'] = run.runId;
+            prefs['creatorDraft'] = draft?.toJson();
+            unawaited(_preferences());
+          },
         ),
       ),
     );
+    prefs['creatorOpen'] = false;
+    unawaited(_preferences());
     if (helper != null && mounted) _profile(helper);
   }
 

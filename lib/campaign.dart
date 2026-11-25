@@ -259,6 +259,7 @@ class Campaign {
   final _creditedCharters = <Charter>{};
   final _learnedRules = <RuleKind>{};
   final _learnedFog = <FogKind>{};
+  final _almanacCrews = <String, Map<String, String>>{};
   final _cosmetics = <String>{};
   final _archives = <Map<String, dynamic>>[];
   Creature? _companion;
@@ -277,7 +278,7 @@ class Campaign {
       : const {};
   Map<int, Set<int>> get notes => Map.unmodifiable({
     for (final entry in _current.notes.entries)
-      entry.key: Set.unmodifiable(entry.value),
+      entry.key: Set<int>.unmodifiable(entry.value),
   });
   Set<String> get clearedBoards => Set.unmodifiable(_cleared);
   List<Creature> get creatures => List.unmodifiable(_creatures);
@@ -291,12 +292,24 @@ class Campaign {
   Set<String> get cosmetics => Set.unmodifiable(_cosmetics);
   Set<RuleKind> get learnedRules => Set.unmodifiable(_learnedRules);
   Set<FogKind> get learnedFog => Set.unmodifiable(_learnedFog);
+  Set<String> get almanacClears => Set.unmodifiable(_almanacCrews.keys);
+  List<String> almanacCrew(String boardId) => List.unmodifiable(
+    _almanacCrews[boardId]?.values.toSet() ?? const <String>{},
+  );
+  bool get fogMastered {
+    final boards = campaignBoards.where(
+      (board) =>
+          _almanacCrews.containsKey(board.id) && board.fog != FogKind.none,
+    );
+    return boards.length >= 2 && boards.any((board) => board.rules.isNotEmpty);
+  }
+
   Set<RuleKind> get masteredRules => {
     for (final rule in _learnedRules)
       if (_studyCount(rule) >= 2 &&
           campaignBoards.any(
             (board) =>
-                _cleared.contains(board.id) &&
+                _almanacCrews.containsKey(board.id) &&
                 board.rules.any((item) => item.kind == rule) &&
                 (board.rules.map((item) => item.kind).toSet().length >= 2 ||
                     board.fog != FogKind.none),
@@ -306,7 +319,7 @@ class Campaign {
   int _studyCount(RuleKind rule) => campaignBoards
       .where(
         (board) =>
-            _cleared.contains(board.id) &&
+            _almanacCrews.containsKey(board.id) &&
             board.rules.any((item) => item.kind == rule),
       )
       .length;
@@ -328,7 +341,7 @@ class Campaign {
 
   Map<int, List<String>> get trayTileIds => Map.unmodifiable({
     for (final digit in tray.keys)
-      digit: List.unmodifiable([
+      digit: List<String>.unmodifiable([
         ...?_current.stock[digit]?.map((tile) => tile.id),
         for (final offer in _current.offers.where(
           (offer) => offer.idle && offer.digit == digit,
@@ -388,6 +401,8 @@ class Campaign {
     for (final item in _built.entries)
       item.key: List<MaterialGlyph>.unmodifiable(item.value),
   });
+  List<MaterialGlyph> get stockedGlyphs =>
+      List.unmodifiable(_materials.values.expand((items) => items));
   Set<String> get claimedGlyphs => Set.unmodifiable(_claimedGlyphs);
   int get housing =>
       2 +
@@ -651,6 +666,7 @@ class Campaign {
     if (!_validPlacement(index, digit)) return false;
     final stock = _current.stock[digit];
     if (stock != null && stock.isNotEmpty) {
+      if (_wrongInFog(index, digit)) return _rejectFog(index, digit);
       _place(index, digit, stock.removeAt(0));
       return true;
     }
@@ -660,31 +676,83 @@ class Campaign {
     return idle != null && claimOffer(idle.id, index);
   }
 
-  bool _validPlacement(int index, int digit) {
-    if (!_inside(index) ||
-        !_knownDigit(digit) ||
-        cleared ||
-        _current.fixed.contains(index) ||
-        !_current.visible.contains(index) ||
-        (board.id == 'opening' && tutorialTokens > 0))
-      return false;
-    if (_current.cells[index] == digit) return false;
-    if (board.fog != FogKind.none && board.solution[index] != digit) {
-      return _fails('That digit returns to the tray. The fog stays as it was.');
+  bool placeTile(int index, String id) {
+    for (final entry in _current.stock.entries) {
+      final position = entry.value.indexWhere((tile) => tile.id == id);
+      if (position < 0) continue;
+      if (!_validPlacement(index, entry.key)) return false;
+      if (_wrongInFog(index, entry.key)) return _rejectFog(index, entry.key);
+      _place(index, entry.key, entry.value.removeAt(position));
+      return true;
     }
-    return true;
+    for (final offer in _current.offers) {
+      final position = offer._tiles.indexWhere((tile) => tile.id == id);
+      if (position >= 0) return _claim(offer, index, position);
+    }
+    return false;
+  }
+
+  bool _validPlacement(int index, int digit) =>
+      _inside(index) &&
+      _knownDigit(digit) &&
+      !cleared &&
+      !_current.fixed.contains(index) &&
+      _current.visible.contains(index) &&
+      (board.id != 'opening' || tutorialTokens == 0) &&
+      _current.cells[index] != digit;
+
+  bool _wrongInFog(int index, int digit) =>
+      board.fog != FogKind.none && board.solution[index] != digit;
+
+  bool _rejectFog(int index, int digit) {
+    if (antics != Antics.off && _cleared.contains('growth-5')) {
+      final evidence = [
+        for (final cell in board.indices)
+          if (cell == index)
+            digit
+          else if (_current.fixed.contains(cell) &&
+              _current.visible.contains(cell))
+            _current.cells[cell]
+          else
+            0,
+      ];
+      final worker = _workingCreatures
+          .where((worker) => jobs.every((job) => job.workerId != worker.id))
+          .firstOrNull;
+      if (worker != null &&
+          board
+              .conflicts(evidence, visible: _current.visible)
+              .contains(index)) {
+        _current.reaction = CreatureReaction(
+          worker.id,
+          -1,
+          digit,
+          ReactionKind.curious,
+          _clock + 750,
+        );
+      }
+    }
+    return _fails('That digit returns to the tray. The fog stays as it was.');
   }
 
   bool claimOffer(String id, int index) {
     final offer = _current.offers.where((item) => item.id == id).firstOrNull;
-    if (offer == null || !_validPlacement(index, offer.digit)) return false;
-    final tile = offer._tiles.removeAt(0);
+    return offer != null && _claim(offer, index, 0);
+  }
+
+  bool _claim(DigitOffer offer, int index, int position) {
+    if (!_validPlacement(index, offer.digit)) return false;
+    final tile = offer._tiles.removeAt(position);
     if (offer.count == 0) {
       _current.offers.remove(offer);
-      if (_current.heldOffer == id)
+      if (_current.heldOffer == offer.id)
         _current
           ..heldOffer = null
           ..heldSince = null;
+    }
+    if (_wrongInFog(index, offer.digit)) {
+      _putStock(offer.digit, [tile]);
+      return _rejectFog(index, offer.digit);
     }
     _place(index, offer.digit, _Tile(tile.id, offer.workerId));
     return true;
@@ -713,6 +781,13 @@ class Campaign {
     _current.reaction = null;
     _current.cells[index] = digit;
     _current.tiles[index] = tile;
+    final origin = tile.origin;
+    if (origin != null) {
+      _current.contributors[origin] = TaskKind.digit;
+      _worker(
+        origin,
+      )?.memory.recordContribution(runId, board.id, TaskKind.digit);
+    }
     if (board.fog != FogKind.none) {
       _current.fixed.add(index);
       _checkReveals();
@@ -771,6 +846,7 @@ class Campaign {
       if (placed != null) _putStock(digit, [placed]);
       _current.cells[move.index] = move.oldDigit;
       if (tile != null) _current.tiles[move.index] = tile;
+      _current.notes.remove(move.index);
       if (move.notes.isNotEmpty)
         _current.notes[move.index] = move.notes.toSet();
     }
@@ -803,6 +879,16 @@ class Campaign {
     return board.conflicts(_current.cells, visible: _current.visible);
   }
 
+  String? visibleConflictHint(String workerId) {
+    final worker = _worker(workerId);
+    if (worker == null || !_perk(worker, WorkPerk.visibleConflictCheck))
+      return null;
+    final candidates = checkBoard();
+    if (candidates.isEmpty)
+      return 'The visible entries agree with the visible clues.';
+    return 'Check ${_cellName(candidates.first)} for a visible conflict.';
+  }
+
   String? hint({bool explain = false}) {
     if (cleared) return null;
     if (board.id == 'opening' && sliding) {
@@ -816,19 +902,15 @@ class Campaign {
     if (conflicts.isNotEmpty) {
       return 'Check ${_cellName(conflicts.first)} for a conflict among the visible clues.';
     }
-    final values = [
-      for (final index in board.indices)
-        _current.visible.contains(index) ? _current.cells[index] : 0,
-    ];
-    final rules = board.visibleRules(_current.visible);
-    for (final index in _current.visible) {
-      if (values[index] != 0) continue;
-      final choices = board.candidates(values, index, constraints: rules);
-      if (choices.length == 1) {
-        return explain
-            ? 'Only ${choices.single} fits ${_cellName(index)} with its visible peers and rules.'
-            : 'Look at ${_cellName(index)}.';
-      }
+    final deduction = board.nextDeduction(
+      _current.cells,
+      visible: _current.visible,
+    );
+    if (deduction != null) {
+      final location = _cellName(deduction.index);
+      return explain
+          ? 'Place ${deduction.digit} at $location. This is the ${deduction.reason}.'
+          : 'Look at $location.';
     }
     return board.fog == FogKind.none
         ? 'Compare the remaining candidates in a row, column, or region.'
@@ -1155,10 +1237,6 @@ class Campaign {
         for (final glyph in job.glyphs) {
           _materials.putIfAbsent(glyph.role, () => []).add(glyph);
         }
-        _current.contributors[job.workerId] = TaskKind.building;
-        _worker(
-          job.workerId,
-        )?.memory.recordContribution(runId, board.id, TaskKind.building);
         if (job.projectId == 'meeting-hall') {
           _hallWorkers.add(job.workerId);
           if (buildings.contains('meeting-hall'))
@@ -1178,6 +1256,7 @@ class Campaign {
     )) {
       worker.memory.recordContribution(runId, stage.id, TaskKind.building);
       worker.memory.recordClear(runId, stage.id);
+      _almanacCrews.putIfAbsent(stage.id, () => {})[worker.id] = worker.name;
     }
   }
 
@@ -1827,15 +1906,20 @@ class Campaign {
         if (board.fog != FogKind.none) _learnedFog.add(board.fog);
       }
     }
-    for (final workerId
-        in _current.tiles.values.map((tile) => tile.origin).nonNulls.toSet()) {
-      _worker(
-        workerId,
-      )?.memory.recordContribution(runId, board.id, TaskKind.digit);
-    }
-    for (final workerId in _current.contributors.keys) {
-      final task = _current.contributors[workerId]!;
-      _worker(workerId)?.memory.recordContribution(runId, board.id, task);
+    final contributed = {
+      for (final id
+          in _current.tiles.values.map((tile) => tile.origin).nonNulls)
+        id: TaskKind.digit,
+      ..._current.contributors,
+    };
+    final crew = libraryChallenge
+        ? null
+        : _almanacCrews.putIfAbsent(board.id, () => {});
+    for (final entry in contributed.entries) {
+      final worker = _worker(entry.key);
+      if (worker == null) continue;
+      crew?[worker.id] = worker.name;
+      worker.memory.recordContribution(runId, board.id, entry.value);
     }
     for (final worker in _workingCreatures) {
       worker.memory.recordClear(runId, board.id);

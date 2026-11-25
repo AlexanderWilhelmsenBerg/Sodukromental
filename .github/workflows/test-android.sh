@@ -13,6 +13,7 @@ trap capture_failure EXIT
 
 if (( $# == 0 )); then
   flutter test --no-pub -d emulator-5554 integration_test
+  bash tool/check-companion-device.sh emulator-5554
 else
   apk="$1"
   package=org.sodukromental.debug
@@ -25,4 +26,7 @@ else
   activity="$(adb shell dumpsys activity activities)"
   grep -E 'topResumedActivity|mResumedActivity' <<< "$activity" | grep -F "$component"
   adb exec-out screencap -p > "$(dirname "$apk")/launched.png"
+  if (( $# == 2 )); then
+    python3 tool/check-debug-upgrade.py emulator-5554 "$2"
+  fi
 fi

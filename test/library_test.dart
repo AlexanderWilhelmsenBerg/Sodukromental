@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -123,6 +124,12 @@ void main() {
     expect(scl.board!.size, 4);
     expect(scl.board!.solution[1], 2);
     expect(scl.board!.accepts(scl.board!.solution), isTrue);
+    const compressed =
+        'sclN4WwpgLghgJl0C5gCcCuAbMBnBByAcgPbIhToAEAyqjIQNarlqZblQAO76AngHS4BfADQBjMAgDaE4ADcEARmFDZCAMzCVAFgEBdIdLnrlc7cYUa5AJl36V1s0a0XzegwlMrFZ+yvU69yOJSEgAMQiGuYfKu8uExQtGuoUKWkUKq8an6sRlJlnH6+dH6qgUSpYn6EvlZ1emupbWluToCQA==';
+    expect(
+      LibraryImport.decode(source, compressed)!.board!.givens,
+      scl.board!.givens,
+    );
     final base = jsonDecode(_testGrid()) as Map;
     final cells = base['cells'] as List;
     final fpuz = LibraryImport.decode(
@@ -352,6 +359,125 @@ void main() {
         results.last.videos.single.note,
         contains('removed a given digit'),
       );
+      await store.close();
+    },
+  );
+  test(
+    'pausing automatic work keeps manual priority and source-only fallback',
+    () async {
+      final gate = Completer<void>();
+      final records = [
+        LibraryEntry(
+          id: '000ABC',
+          title: 'Newest',
+          author: 'Puzzle Author',
+          published: _at,
+        ),
+        const LibraryEntry(
+          id: '000DEF',
+          title: 'Source only',
+          author: 'Puzzle Author',
+        ),
+      ];
+      final queried = <String>[];
+      Future<LibraryResponse> fetch(Uri uri) async {
+        if (uri.path.endsWith('zeigen.php')) {
+          final id = uri.queryParameters['id']!;
+          return _response(
+            _detail(
+              id,
+              content: id == '000ABC' ? 'https://sudokupad.app/playable' : null,
+            ),
+          );
+        }
+        queried.add(uri.path);
+        await gate.future;
+        return _response(_classic);
+      }
+
+      final store = await LibraryStore.open(
+        executor: NativeDatabase.memory(),
+        fetch: fetch,
+        records: records,
+        includeAuthored: false,
+        now: () => _at,
+      );
+      await store.setAutomatic(true);
+      await _until(() => queried.isNotEmpty);
+      expect(
+        store.jobs.firstWhere((job) => job.id == '000ABC').manual,
+        isFalse,
+      );
+      await store.setAutomatic(false);
+      expect(
+        store.jobs.firstWhere((job) => job.id == '000ABC').state,
+        LibraryJobState.paused,
+      );
+      gate.complete();
+      await store.requestDownload('000ABC');
+      await _until(
+        () => store.availability('000ABC') == LibraryAvailability.play,
+      );
+      expect(store.automatic, isFalse);
+      expect(store.jobs.single.id, '000DEF');
+      expect(store.jobs.single.state, LibraryJobState.paused);
+      await store.setAutomatic(true);
+      await _until(() => store.jobs.isEmpty);
+      expect(store.availability('000DEF'), LibraryAvailability.original);
+      await store.close();
+    },
+  );
+
+  test(
+    'offline bundle includes all finale routes and expeditions with revision-pinned solves',
+    () async {
+      final folder = await Directory.systemTemp.createTemp('library-authored');
+      addTearDown(() => folder.delete(recursive: true));
+      final database = File('${folder.path}/store.db');
+      Future<LibraryResponse> offline(Uri _) async =>
+          throw const LibraryRequestFailure('Offline');
+      var store = await LibraryStore.open(
+        executor: NativeDatabase(database),
+        fetch: offline,
+        records: const [],
+      );
+      expect(store.browse().length, 28);
+      final boards = store.entries.map(
+        (entry) => store.download(entry.id)!.board!,
+      );
+      expect(boards.where((board) => board.finale).length, 3);
+      expect(boards.where((board) => board.expedition).length, 4);
+      expect(store.download('opening')!.board!.size, 4);
+      final finale = store
+          .browse(all: true, requireRules: {'palindrome', 'regionSum'})
+          .firstWhere((entry) => entry.id == 'lines-finale');
+      final puzzle = store.download(finale.id)!;
+      final board = puzzle.board!;
+      expect(board.accepts(board.solution), isTrue);
+      await store.save(
+        finale.id,
+        finale.revision,
+        LibrarySave(
+          [
+            LibraryPosition(board.givens, {}),
+            LibraryPosition(board.solution, {}),
+          ],
+          1,
+          _at,
+          LibraryProgress.solved,
+        ),
+      );
+      await store.close();
+      store = await LibraryStore.open(
+        executor: NativeDatabase(database),
+        fetch: offline,
+        records: const [],
+      );
+      expect(
+        store.browse(progress: LibraryProgress.solved).single.id,
+        finale.id,
+      );
+      expect(store.getSave(finale.id, finale.revision)!.index, 1);
       await store.close();
     },
   );

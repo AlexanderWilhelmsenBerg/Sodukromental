@@ -169,8 +169,19 @@ class LibraryStore extends ChangeNotifier {
     _dismissed.addAll((_prefs['dismissed'] as List? ?? []).cast<String>());
     _settled.addAll((_prefs['settled'] as Map? ?? {}).cast<String, String>());
     final seeds = records ?? await _catalogSeed();
-    for (final entry in seeds) {
-      _entries.putIfAbsent(entry.id, () => entry);
+    for (final seed in seeds) {
+      final current = _entries[seed.id];
+      if (current == null) {
+        _entries[seed.id] = seed;
+      } else if (seed.videos.isNotEmpty) {
+        final videos = {
+          for (final video in seed.videos) video.id: video,
+          for (final video in current.videos) video.id: video,
+        };
+        _entries[seed.id] = current.withData({
+          'videos': videos.values.map((video) => video.toJson()).toList(),
+        });
+      }
     }
     for (final download in _downloads.values) {
       _entries.putIfAbsent(download.entry.id, () => download.entry);
@@ -205,18 +216,34 @@ class LibraryStore extends ChangeNotifier {
   }
 
   Future<List<LibraryEntry>> _catalogSeed() async {
-    final curated = {for (final entry in librarySeedEntries()) entry.id: entry};
+    final index = {for (final entry in librarySeedEntries()) entry.id: entry};
     try {
       final data = await rootBundle.loadString('assets/library/catalog.json');
-      return [
-        ...curated.values,
-        for (final entry
-            in (jsonDecode(data) as List).cast<Map<String, dynamic>>())
-          if (!curated.containsKey(entry['id'])) LibraryEntry.fromJson(entry),
-      ];
+      for (final entry in await compute(_parseLibrarySeed, data)) {
+        index.putIfAbsent(entry.id, () => entry);
+      }
     } on FlutterError {
-      return curated.values.toList();
+      // Authored puzzles and curated sources remain available without the snapshot.
     }
+    try {
+      final data = await rootBundle.loadString('assets/library/features.json');
+      for (final entry in (jsonDecode(data) as Map<String, dynamic>).entries) {
+        final source = index[entry.key];
+        if (source == null) continue;
+        final known = {
+          for (final video in source.videos) video.id: video.toJson(),
+        };
+        for (final video
+            in (entry.value as List).cast<Map<String, dynamic>>()) {
+          final id = video['id'] as String;
+          known[id] = {...video, ...?known[id]};
+        }
+        index[entry.key] = source.withData({'videos': known.values.toList()});
+      }
+    } on FlutterError {
+      // A catalog snapshot can be shipped without a feature index.
+    }
+    return index.values.toList();
   }
 
   Iterable<LibraryEntry> get entries => _entries.values;
@@ -370,13 +397,25 @@ class LibraryStore extends ChangeNotifier {
         _prefs['next'] = libraryListing.toString();
         _prefs['listed'] = false;
         _prefs['pages'] = 0;
+        _prefs.remove('headNext');
         _blockedDetails.clear();
         await _persistPreferences();
       }
-      var head = _prefs['next'] as String? ?? libraryListing.toString();
+      final lastHead = DateTime.tryParse(
+        _prefs['headCheckedAt'] as String? ?? '',
+      );
+      final latestOnly =
+          complete &&
+          !refresh &&
+          (_prefs['headNext'] != null ||
+              lastHead == null ||
+              _now().difference(lastHead) >= const Duration(hours: 12));
+      var head =
+          (latestOnly ? _prefs['headNext'] : _prefs['next']) as String? ??
+          libraryListing.toString();
       final seen = <String>{};
       final knownIds = <String>{};
-      while (!complete && !_disposed) {
+      while ((!complete || latestOnly) && !_disposed) {
         if (!seen.add(head))
           throw const FormatException('The source repeated a catalog page.');
         final url = Uri.parse(head);
@@ -388,6 +427,9 @@ class LibraryStore extends ChangeNotifier {
           _now(),
         );
         final committed = <LibraryEntry>[];
+        final discovered = page.entries.any(
+          (entry) => !_entries.containsKey(entry.id),
+        );
         for (final listing in page.entries) {
           if (!knownIds.add(listing.id)) continue;
           final old = _entries[listing.id];
@@ -407,12 +449,19 @@ class LibraryStore extends ChangeNotifier {
                   }),
           );
         }
-        final next = page.next;
-        final nextPrefs = {
-          'next': next?.toString(),
-          'listed': next == null,
-          'pages': pages + 1,
-        };
+        final next = !latestOnly || discovered ? page.next : null;
+        final nextPrefs = latestOnly
+            ? {
+                'headNext': next?.toString(),
+                if (next == null) 'headCheckedAt': _now().toIso8601String(),
+              }
+            : {
+                'next': next?.toString(),
+                'listed': next == null,
+                'pages': pages + 1,
+                if (url.queryParameters['start'] == null)
+                  'headCheckedAt': _now().toIso8601String(),
+              };
         await _db.transaction(() async {
           for (final entry in committed) {
             await _db.write('catalog', entry.id, entry.toJson());
@@ -499,7 +548,7 @@ class LibraryStore extends ChangeNotifier {
     final old = _entries[id]!;
     if (old.authored ||
         (old.detailRead != null &&
-            old.language == language &&
+            (old.language == language || old.requestedLanguage == language) &&
             _now().difference(old.detailRead!) <= const Duration(days: 7))) {
       return Future.value(old);
     }
@@ -551,6 +600,7 @@ class LibraryStore extends ChangeNotifier {
       throw const FormatException('Source puzzle text could not be read.');
     final videos = await _verifyVideos(detail, old.videos);
     final entry = detail.entry.withData({
+      'requestedLanguage': selected,
       'videos': videos.map((video) => video.toJson()).toList(),
     });
     if (!_disposed) await _setEntry(entry);
@@ -734,6 +784,11 @@ class LibraryStore extends ChangeNotifier {
             .toList()
           ..sort(_newest);
     for (final entry in missing.take(10 - active)) {
+      if (!automatic || _disposed) break;
+      if (_jobs.containsKey(entry.id) ||
+          _downloads.containsKey(entry.id) ||
+          _dismissed.contains(entry.id))
+        continue;
       await _putJob(
         LibraryJob(entry.id, entry.revision, false, LibraryJobState.queued),
       );
@@ -775,6 +830,7 @@ class LibraryStore extends ChangeNotifier {
         try {
           await _runJob(selected.id);
         } on LibraryRequestFailure catch (error) {
+          if (_disposed) return;
           final active = _jobs[selected.id];
           if (active == null) continue;
           await _putJob(
@@ -802,6 +858,7 @@ class LibraryStore extends ChangeNotifier {
           await _pauseForStorage(selected.id);
           break;
         } on FormatException catch (error) {
+          if (_disposed) return;
           final active = _jobs[selected.id];
           if (active != null)
             await _putJob(
@@ -883,6 +940,7 @@ class LibraryStore extends ChangeNotifier {
   }
 
   Future<void> _pauseForStorage(String id) async {
+    if (_disposed) return;
     final active = _jobs[id];
     if (active == null) return;
     try {

@@ -101,6 +101,167 @@ class _Drive {
 }
 
 void main() {
+  test('each authored variant requires all of its featured rule families', () {
+    for (final board in campaignBoards) {
+      final families = board.rules.map((rule) => rule.kind).toSet();
+      for (final family in families) {
+        final remaining = board.rules.where((rule) => rule.kind != family);
+        expect(
+          board.countSolutions(constraints: remaining.toList()),
+          2,
+          reason: '${board.id} without ${family.label}',
+        );
+      }
+    }
+  });
+
+  test('every visible authored board has a mechanical logical solve path', () {
+    for (final board in campaignBoards.where(
+      (item) => item.fog == FogKind.none,
+    )) {
+      final cells = board.givens.toList();
+      while (cells.contains(0)) {
+        final step = board.nextDeduction(cells);
+        expect(step, isNotNull, reason: board.id);
+        cells[step!.index] = step.digit;
+      }
+      expect(cells, board.solution, reason: board.id);
+    }
+  });
+
+  test('favorite offer and tray expose a single reserved tile', () {
+    var run = Campaign(now: _epoch);
+    _opening(run);
+    expect(run.advance(), isTrue);
+    final drive = _Drive(run)..solve();
+    expect(run.advance(), isTrue);
+    run.tick(drive.time.add(const Duration(milliseconds: 1)));
+    final favorite = run.offers.single;
+    expect(favorite.idle, isTrue);
+    final id = favorite.tileIds.single;
+    final count = run.tray[favorite.digit];
+    expect(
+      run.trayTileIds[favorite.digit]!.where((tile) => tile == id),
+      hasLength(1),
+    );
+    run = _reload(run);
+    final cell = run.board.indices.firstWhere((index) => run.cells[index] == 0);
+    expect(run.placeTile(cell, id), isTrue);
+    expect(run.tray[favorite.digit] ?? 0, count! - 1);
+    expect(run.cellTileIds[cell], id);
+    expect(run.claimOffer(favorite.id, cell), isFalse);
+    expect(run.undo(), isTrue);
+    expect(run.trayTileIds[favorite.digit], contains(id));
+  });
+
+  test(
+    'collector recall and tinkerer salvage keep the conflicting copy usable',
+    () {
+      for (final personality in [Personality.collector, Personality.tinkerer]) {
+        final seed = Iterable<int>.generate(100).firstWhere(
+          (seed) => Creature.amoeba(seed).personality == personality,
+        );
+        var run = Campaign(now: _epoch, seed: seed);
+        _opening(run);
+        expect(run.advance(), isTrue);
+        final drive = _Drive(run)..solve();
+        expect(run.advance(), isTrue);
+        final cell = run.board.indices.firstWhere(
+          (index) =>
+              run.cells[index] == 0 &&
+              run.board.peers[index].any(
+                (peer) =>
+                    run.fixed.contains(peer) &&
+                    run.tray.containsKey(run.cells[peer]),
+              ),
+        );
+        final bad = run.board.peers[cell]
+            .map((peer) => run.cells[peer])
+            .firstWhere((digit) => run.tray.containsKey(digit));
+        final count = run.tray[bad]!;
+        final id = run.trayTileIds[bad]!.first;
+        expect(run.placeTile(cell, id), isTrue);
+        expect(run.reaction?.kind.name, personality.name);
+        run = _reload(run);
+        run.tick(drive.time.add(const Duration(seconds: 1)));
+        expect(run.cells[cell], 0);
+        if (personality == Personality.collector) {
+          expect(run.stashedDigit, bad);
+          expect(run.recallStash(), isTrue);
+          expect(run.recallStash(), isFalse);
+          expect(run.trayTileIds[bad], contains(id));
+        } else {
+          expect(run.fragments, 1);
+          expect(run.trayTileIds[bad], isNot(contains(id)));
+        }
+        expect(run.tray[bad], count);
+        expect(run.undo(), isTrue);
+        expect(run.tray[bad], count);
+        if (personality == Personality.tinkerer) {
+          expect(run.place(cell, bad), isTrue);
+          run.tick(drive.time.add(const Duration(seconds: 2)));
+          expect(run.fragments, 1);
+        }
+      }
+    },
+  );
+
+  test(
+    'every encounter clears and alternative routes remain independently saved',
+    () {
+      final run = Campaign(now: _epoch);
+      _opening(run);
+      final drive = _Drive(run)..route('lines');
+      for (final id in ['outside', 'positions']) {
+        final stages = campaignBoards
+            .where((board) => board.route == id)
+            .toList();
+        expect(drive.run.openBoard(stages.first.id), isTrue);
+        final blank = drive.run.board.indices.firstWhere(
+          (index) => drive.run.cells[index] == 0,
+        );
+        drive.run.toggleNote(blank, 1);
+        expect(drive.run.openBoard('lines-finale'), isTrue);
+        expect(drive.run.cleared, isTrue);
+        expect(drive.run.openBoard(stages.first.id), isTrue);
+        expect(drive.run.notes[blank], {1});
+        for (var i = 0; i < stages.length; i++) {
+          drive.solve();
+          if (i + 1 < stages.length) expect(drive.run.advance(), isTrue);
+        }
+      }
+      for (final id in [
+        'trail',
+        'linked-torches',
+        'hilltop',
+        'night-market',
+        'canal',
+        'kiln',
+      ]) {
+        expect(drive.run.openBoard(id), isTrue, reason: id);
+        drive.solve();
+      }
+      expect(drive.run.clearedBoards, hasLength(28));
+      expect(drive.run.prestigePayout, 5);
+      expect(drive.run.fogMastered, isTrue);
+      expect(drive.run.masteredRules, contains(RuleKind.kropkiWhite));
+      expect(
+        drive.run.almanacCrew('night-market'),
+        contains(drive.run.creatures.single.name),
+      );
+      expect(drive.run.prestige(quick: true), isTrue);
+      final resumed = _reload(drive.run);
+      expect(resumed.almanacClears, hasLength(28));
+      expect(resumed.fogMastered, isTrue);
+      expect(resumed.masteredRules, contains(RuleKind.kropkiWhite));
+      expect(resumed.almanacCrew('night-market'), isNotEmpty);
+      expect(
+        drive.run.projects.where((item) => item.id.startsWith('cosmetic-')),
+        hasLength(4),
+      );
+    },
+  );
+
   test('opening saves the exact token and a reserved fourth digit once', () {
     var run = Campaign(now: _epoch);
     expect(run.tutorialReady, isFalse);
@@ -257,6 +418,41 @@ void main() {
     expect(drive.run.build('nest'), isTrue);
     expect(drive.run.housing, 3);
     expect(drive.run.build('nest'), isFalse);
+  });
+
+  test('every authored finale requires both rules for a single deduction', () {
+    for (final board in campaignBoards.where((item) => item.finale)) {
+      final rules = board.rules.map((rule) => rule.kind).toSet();
+      final reduced = [
+        for (final kind in rules)
+          board.rules.where((rule) => rule.kind != kind).toList(),
+      ];
+      final values = List<int>.of(board.givens);
+      final jointlyDeduced = <int>[];
+      while (values.contains(0)) {
+        var progress = false;
+        for (final index in board.indices) {
+          if (values[index] != 0) continue;
+          final options = board.candidates(values, index);
+          if (options.length != 1) continue;
+          if (reduced.every(
+            (constraints) =>
+                board
+                    .candidates(values, index, constraints: constraints)
+                    .length >
+                1,
+          )) {
+            jointlyDeduced.add(index);
+          }
+          values[index] = options.single;
+          progress = true;
+          break;
+        }
+        expect(progress, isTrue, reason: board.id);
+      }
+      expect(jointlyDeduced, isNotEmpty, reason: board.id);
+      expect(values, board.solution, reason: board.id);
+    }
   });
 
   test('all three routes end with the starter alone and keep first clears', () {

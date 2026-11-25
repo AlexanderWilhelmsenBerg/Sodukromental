@@ -28,6 +28,8 @@ flutter:
   assets:
     - assets/library/
     - assets/brand/mark.png
+    - assets/fonts/PlusJakartaSans-LICENSE.txt
+    - assets/fonts/JetBrainsMono-LICENSE.txt
   fonts:
     - family: PlusJakartaSans
       fonts:
