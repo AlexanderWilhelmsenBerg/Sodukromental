@@ -65,7 +65,7 @@ class _LibraryDatabase extends GeneratedDatabase {
 class LibraryStore extends ChangeNotifier {
   LibraryStore._(
     this._db,
-    this._fetch,
+    this._readSource,
     this._transport,
     this._now,
     this._decodeImage,
@@ -73,7 +73,12 @@ class LibraryStore extends ChangeNotifier {
   );
 
   final _LibraryDatabase _db;
-  final LibraryFetch _fetch;
+  final LibraryFetch _readSource;
+  final _activeRequests = <Completer<LibraryResponse>>{};
+  static const _closedFailure = LibraryRequestFailure(
+    'The Library connection closed.',
+    retry: false,
+  );
   final LibraryTransport? _transport;
   final DateTime Function() _now;
   final Future<bool> Function(Uint8List) _decodeImage;
@@ -90,7 +95,8 @@ class LibraryStore extends ChangeNotifier {
   final _prefs = <String, dynamic>{};
   Timer? _syncRetry;
   Timer? _jobRetry;
-  bool _draining = false;
+  Future<void>? _downloadWork;
+  Future<void>? _closing;
   bool _disposed = false;
   bool syncing = false;
   bool get automatic => _prefs['automatic'] as bool? ?? false;
@@ -279,6 +285,7 @@ class LibraryStore extends ChangeNotifier {
       revision == null ? _latest[id] : _saves['$id|$revision'];
 
   Future<void> save(String id, String revision, LibrarySave value) async {
+    if (_disposed) return;
     final key = '$id|$revision';
     await _db.write('progress', key, value.toJson());
     if (_disposed) return;
@@ -381,10 +388,28 @@ class LibraryStore extends ChangeNotifier {
     if (_synchronizing case final current?) return current;
     _syncRetry?.cancel();
     _queuedLanguage = language;
-    final future = _sync(refresh, language);
+    final future = _sync(refresh, language).whenComplete(() {
+      _synchronizing = null;
+    });
     _synchronizing = future;
-    unawaited(future.whenComplete(() => _synchronizing = null));
     return future;
+  }
+
+  Future<LibraryResponse> _fetch(Uri uri) {
+    if (_disposed) return Future.error(_closedFailure);
+    final result = Completer<LibraryResponse>();
+    _activeRequests.add(result);
+    Future<LibraryResponse>.sync(() => _readSource(uri)).then(
+      (response) {
+        if (!result.isCompleted) result.complete(response);
+      },
+      onError: (Object error, StackTrace stack) {
+        if (!result.isCompleted) result.completeError(error, stack);
+      },
+    );
+    return result.future.whenComplete(() {
+      _activeRequests.remove(result);
+    });
   }
 
   Future<void> _sync(bool refresh, String language) async {
@@ -513,9 +538,11 @@ class LibraryStore extends ChangeNotifier {
           _blockedDetails.add(entry.id);
         }
       }
+      if (_disposed) return;
       _prefs['resumeSeconds'] = 0;
       await _persistPreferences();
     } on LibraryRequestFailure catch (error) {
+      if (_disposed) return;
       syncMessage = error.message;
       failed = true;
       if (error.retry) _scheduleSync(error.seconds);
@@ -546,7 +573,8 @@ class LibraryStore extends ChangeNotifier {
 
   Future<LibraryEntry> details(String id, {String language = 'en'}) {
     final old = _entries[id]!;
-    if (old.authored ||
+    if (_disposed ||
+        old.authored ||
         (old.detailRead != null &&
             (old.language == language || old.requestedLanguage == language) &&
             _now().difference(old.detailRead!) <= const Duration(days: 7))) {
@@ -619,6 +647,7 @@ class LibraryStore extends ChangeNotifier {
       known.putIfAbsent(video.id, () => video);
     }
     for (final id in {...detail.videoIds, ...known.keys}) {
+      if (_disposed) break;
       final watch = Uri.https('www.youtube.com', '/watch', {'v': id});
       final existing = known[id];
       try {
@@ -692,6 +721,7 @@ class LibraryStore extends ChangeNotifier {
   }
 
   Future<void> setAutomatic(bool enabled) async {
+    if (_disposed) return;
     _prefs['automatic'] = enabled;
     await _persistPreferences();
     _changed();
@@ -699,6 +729,7 @@ class LibraryStore extends ChangeNotifier {
       unawaited(resumeDownloads());
     } else {
       for (final job in _jobs.values.toList()) {
+        if (_disposed) return;
         if (!job.manual && job.state != LibraryJobState.failed) {
           await _putJob(
             LibraryJob(job.id, job.revision, false, LibraryJobState.paused),
@@ -710,12 +741,14 @@ class LibraryStore extends ChangeNotifier {
   }
 
   Future<void> requestDownload(String id, {bool replace = false}) async {
+    if (_disposed) return;
     final entry = _entries[id];
     if (entry == null || entry.authored || entry.withdrawn) return;
     if (!replace && _downloads.containsKey(id)) return;
     _dismissed.remove(id);
     _settled.remove(id);
     await _persistPreferences();
+    if (_disposed) return;
     final existing = _jobs[id];
     await _putJob(
       LibraryJob(
@@ -732,20 +765,23 @@ class LibraryStore extends ChangeNotifier {
   }
 
   Future<void> cancelDownload(String id) async {
+    if (_disposed) return;
     _dismissed.add(id);
     await _forgetJob(id);
+    if (_disposed) return;
     await _persistPreferences();
     _changed();
   }
 
   Future<void> removeDownload(String id) async {
-    if (_entries[id]?.authored == true) return;
+    if (_disposed || _entries[id]?.authored == true) return;
     _downloads.remove(id);
     await _db.erase('downloads', id);
     await cancelDownload(id);
   }
 
   Future<void> retryDownload(String id) async {
+    if (_disposed) return;
     final job = _jobs[id];
     if (job == null) return;
     await _putJob(LibraryJob(id, job.revision, true, LibraryJobState.queued));
@@ -755,6 +791,7 @@ class LibraryStore extends ChangeNotifier {
 
   Future<void> resumeDownloads() async {
     for (final job in _jobs.values.toList()) {
+      if (_disposed) return;
       if (job.state == LibraryJobState.paused && (job.manual || automatic)) {
         await _putJob(
           LibraryJob(job.id, job.revision, job.manual, LibraryJobState.queued),
@@ -795,9 +832,18 @@ class LibraryStore extends ChangeNotifier {
     }
   }
 
-  Future<void> _drain() async {
-    if (_draining || _disposed) return;
-    _draining = true;
+  Future<void> _drain() {
+    if (_disposed) return Future.value();
+    if (_downloadWork case final current?) return current;
+    final work = _runDownloadQueue().whenComplete(() {
+      _downloadWork = null;
+      _changed();
+    });
+    _downloadWork = work;
+    return work;
+  }
+
+  Future<void> _runDownloadQueue() async {
     try {
       while (!_disposed) {
         await _enqueueAutomatic();
@@ -874,9 +920,8 @@ class LibraryStore extends ChangeNotifier {
           _changed();
         }
       }
-    } finally {
-      _draining = false;
-      _changed();
+    } on SqliteException {
+      if (!_disposed) rethrow;
     }
   }
 
@@ -990,13 +1035,35 @@ class LibraryStore extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
-  Future<void> close() async {
+  Future<void> close() => _closing ??= _close();
+
+  Future<void> _close() async {
     _disposed = true;
     _syncRetry?.cancel();
     _jobRetry?.cancel();
+    for (final request in _activeRequests.toList()) {
+      if (!request.isCompleted) request.completeError(_closedFailure);
+    }
     _transport?.close();
-    await _db.close();
-    super.dispose();
+    final operations = <Future<dynamic>>[
+      if (_synchronizing case final sync?) sync,
+      if (_downloadWork case final downloads?) downloads,
+      ..._inFlightDetails.values,
+    ];
+    try {
+      await Future.wait(
+        operations.map((work) async {
+          try {
+            await work;
+          } on LibraryRequestFailure {
+            // Waiting network operations may complete with the requested shutdown.
+          }
+        }),
+      );
+    } finally {
+      await _db.close();
+      super.dispose();
+    }
   }
 }
 

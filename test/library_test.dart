@@ -481,4 +481,50 @@ void main() {
       await store.close();
     },
   );
+  test(
+    'close interrupts listing and queued network work without late errors',
+    () async {
+      final reachedSource = Completer<void>();
+      final response = Completer<LibraryResponse>();
+      final store = await LibraryStore.open(
+        executor: NativeDatabase.memory(),
+        records: const [],
+        includeAuthored: false,
+        fetch: (_) {
+          reachedSource.complete();
+          return response.future;
+        },
+      );
+      final sync = store.synchronize();
+      await reachedSource.future;
+      final closed = store.close();
+      expect(identical(closed, store.close()), isTrue);
+      await closed;
+      await sync;
+      response.completeError(
+        const HttpException('Connection closed before a reply'),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(store.syncing, isFalse);
+      expect(store.syncMessage, isNull);
+
+      final transport = LibraryTransport();
+      final uri = Uri.https('logic-masters.de', '/Raetselportal/');
+      final active = transport.get(uri);
+      final queued = transport.get(uri);
+      final closedFailure = throwsA(
+        isA<LibraryRequestFailure>().having(
+          (failure) => failure.retry,
+          'retry',
+          isFalse,
+        ),
+      );
+      final first = expectLater(active, closedFailure);
+      final second = expectLater(queued, closedFailure);
+      transport.close();
+      await first;
+      await second;
+      await expectLater(transport.get(uri), closedFailure);
+    },
+  );
 }

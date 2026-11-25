@@ -1,0 +1,33 @@
+name: Android companion lifecycle
+
+on: workflow_dispatch
+
+permissions:
+  contents: read
+
+jobs:
+  companion:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/flutter-android
+      - run: flutter build apk --debug --no-pub
+      - uses: ./.github/actions/emulator-kvm
+      - name: Exercise roaming, launcher, stop, lock and revocation
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: default
+          disable-animations: true
+          script: |
+            adb install -r build/app/outputs/flutter-apk/app-debug.apk
+            bash tool/check-companion-device.sh emulator-5554 --lifecycle
+      - name: Save companion window and notification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: companion-lifecycle-${{ github.sha }}-${{ github.run_attempt }}
+          path: android-diagnostics/companion/
+          if-no-files-found: warn

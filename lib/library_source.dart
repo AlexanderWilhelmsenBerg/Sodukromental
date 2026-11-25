@@ -41,23 +41,41 @@ class LibraryTransport {
   LibraryTransport({this.spacing = const Duration(milliseconds: 750)});
   final Duration spacing;
   final _http = HttpClient()..connectionTimeout = const Duration(seconds: 10);
-  final _requests = <String, Future<void>>{};
+  final _requests = <String, Completer<void>>{};
+  final _turns = <Completer<void>>{};
+  final _releaseTimers = <Timer>{};
+  bool _closed = false;
+  static const _closedFailure = LibraryRequestFailure(
+    'The Library connection closed.',
+    retry: false,
+  );
 
   Future<LibraryResponse> get(Uri uri) async {
+    if (_closed) throw _closedFailure;
     if (uri.scheme != 'https')
       throw const LibraryRequestFailure(
         'The source requires a secure link.',
         retry: false,
       );
-    final previous = _requests[uri.host] ?? Future.value();
+    final previous = _requests[uri.host];
     final turn = Completer<void>();
-    _requests[uri.host] = turn.future;
-    await previous;
+    _requests[uri.host] = turn;
+    _turns.add(turn);
     try {
-      final response = await _read(uri);
-      return response;
+      await previous?.future;
+      if (_closed) throw _closedFailure;
+      return await _read(uri);
     } finally {
-      unawaited(Future<void>.delayed(spacing).then((_) => turn.complete()));
+      if (!_closed) {
+        late final Timer release;
+        release = Timer(spacing, () {
+          _releaseTimers.remove(release);
+          if (_requests[uri.host] == turn) _requests.remove(uri.host);
+          _turns.remove(turn);
+          turn.complete();
+        });
+        _releaseTimers.add(release);
+      }
     }
   }
 
@@ -96,13 +114,36 @@ class LibraryTransport {
         },
       );
     } on SocketException {
+      if (_closed) throw _closedFailure;
       throw const LibraryRequestFailure('Waiting for an internet connection.');
     } on TimeoutException {
+      if (_closed) throw _closedFailure;
       throw const LibraryRequestFailure('The source timed out.');
+    } on HttpException {
+      if (_closed) throw _closedFailure;
+      throw const LibraryRequestFailure('The source connection ended.');
+    } on TlsException {
+      if (_closed) throw _closedFailure;
+      throw const LibraryRequestFailure(
+        'The secure connection to the source failed.',
+      );
     }
   }
 
-  void close() => _http.close(force: true);
+  void close() {
+    if (_closed) return;
+    _closed = true;
+    for (final waiter in _turns) {
+      waiter.complete();
+    }
+    _turns.clear();
+    for (final timer in _releaseTimers) {
+      timer.cancel();
+    }
+    _releaseTimers.clear();
+    _requests.clear();
+    _http.close(force: true);
+  }
 }
 
 LibraryResponse requireLibraryResponse(LibraryResponse response) {

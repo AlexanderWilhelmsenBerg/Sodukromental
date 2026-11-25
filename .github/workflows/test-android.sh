@@ -12,7 +12,10 @@ capture_failure() {
 trap capture_failure EXIT
 
 if (( $# == 0 )); then
-  flutter test --no-pub -d emulator-5554 integration_test
+  flutter test --no-pub -d emulator-5554 integration_test/debug_smoke_test.dart
+  # Flutter removes the instrumented package after a device test. Restore its
+  # package identity before applying the separate companion fixture's grants.
+  adb install -r build/app/outputs/flutter-apk/app-debug.apk
   bash tool/check-companion-device.sh emulator-5554
 else
   apk="$1"

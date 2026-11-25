@@ -72,11 +72,23 @@ stage() {
 stage launcher-and-notification
 android shell input keyevent KEYCODE_HOME
 sleep 2
-android shell dumpsys window windows > "$artifacts/launcher-window.txt"
-grep -F 'Sodukromental companion' "$artifacts/launcher-window.txt"
-grep -A 25 'Sodukromental companion' "$artifacts/launcher-window.txt" |
-  grep -E 'APPLICATION_OVERLAY|ty=2038'
-android exec-out screencap -p > "$artifacts/launcher.png"
+capture_overlay() {
+  local view=$1
+  android shell dumpsys window windows > "$artifacts/$view-window.txt"
+  grep -A 25 'Sodukromental companion' "$artifacts/$view-window.txt" |
+    grep -E 'APPLICATION_OVERLAY|ty=2038'
+  android exec-out screencap -p > "$artifacts/$view.png"
+}
+capture_overlay launcher
+for category in APP_CALCULATOR APP_CONTACTS; do
+  component=$(android shell cmd package resolve-activity --brief -a android.intent.action.MAIN \
+    -c "android.intent.category.$category" | tr -d '\r' | tail -1)
+  if [[ "$component" == */* ]]; then break; fi
+done
+[[ "$component" == */* ]]
+android shell am start -W -a android.intent.action.MAIN -n "$component"
+capture_overlay other-app
+android shell input keyevent KEYCODE_HOME
 android shell dumpsys notification > "$artifacts/notification.txt"
 grep -F 'companion_roaming' "$artifacts/notification.txt"
 android shell cmd statusbar expand-notifications
