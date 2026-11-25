@@ -52,3 +52,9 @@ The board follows the Hum palette, with outlined regions, monospaced digits, tac
 ## Screen captures
 
 The debug handoff packages the original PNGs in `campaign-design/`. The `boards-contact-sheet.png`, `colony-contact-sheet.png`, and `library-and-settings-contact-sheet.png` index the captures at 320, 375, 414, and 768 dp. The boards sheet covers the opening, Renban, a Sandwich edge clue, and the dark starting state for Halo. The colony sheet covers the creator, the creature profile, settlement management, and sprite poses. Library and Settings use the fixture app shell.
+
+The checked-in contact sheets show [the opening, variants and fog](evidence/boards.png), [creatures and settlement](evidence/creatures.png), and [Library and Settings](evidence/library.png) across four viewport widths.
+
+Android 9 rendered the opening on a clean install of the `5083583` local build. [Device screenshot](evidence/android-9-opening.png)
+
+The Android 14 device test captured the same retained companion above the launcher and an ordinary app. [Launcher visit](evidence/companion-launcher.png) · [Visit over another app](evidence/companion-other-app.png)

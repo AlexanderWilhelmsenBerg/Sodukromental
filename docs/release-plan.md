@@ -48,6 +48,8 @@ The story, game mechanics, and UI/UX agents each review **every debug slice**, i
 
 Implementation agents work in disjoint file areas in the shared checkout using the same pinned dependencies. Reuse economical agents across slices and reserve architectural decisions for integration. The story, mechanics and UI/UX agents can also implement their own assigned components. Independent assurance and the project manager retain acceptance authority. A review pass contains the initial finding, the coordinator decision, the implementation change, and the independent result on the current build. The tester handoff identifies checks still requiring a physical device.
 
+The debug build used six economical agents under one project manager. The story, mechanics and design agents worked alongside Library, build and independent assurance owners. For a feedback iteration, give each reviewer the same slice ID, commit and reproduction. Ask for the player consequence, the smallest proposed change and an observable retest. The coordinator assigns each accepted change to one owner and closes it against the retest. Reuse one device playthrough for related reviews. Run a fresh hosted build when the APK changes.
+
 ## Tolerances and exceptions
 
 - **Scope and benefits.** Accept the Required slices before handoff. Record field observations and any identified follow-on work in the register. Reassess whether each phase still supports app testing and actionable feedback.

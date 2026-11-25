@@ -2,9 +2,21 @@
 
 ## Candidate
 
-The APK, checksum, source revision, application ID, version and launch evidence are pending. Track the test results and outstanding checks in the [independent review](agent-review.md) and the [slice register](debug-release-slices.md).
+**Download the Android debug build, version 0.1.0 (build 1).** Open the Actions artifact while signed in to GitHub, extract the ZIP and install `sodukromental-0.1.0-debug-android.apk`. Android 7.0 or newer can run the game. Optional visits over other apps require Android 8.0 or newer. [Download the debug build](https://github.com/AlexanderWilhelmsenBerg/Sodukromental/actions/runs/45614087897/artifacts/15022054322)
 
-Once the candidate is available, download the APK from its supplied artifact location. Compare its SHA-256 with the value listed for that candidate. Open the APK on Android and follow the installation prompt. If prompted, allow the current download app to install the package. With Android platform tools and a connected test device, `adb install -r <apk>` installs it or replaces a compatible earlier build. A signature mismatch can require uninstalling the earlier debug build, which removes its local saves. Keep an earlier build and its saves when testing an upgrade until the candidate's signing identity is confirmed.
+| Item | Verified value |
+| --- | --- |
+| Built source | [5083583983c2ab23a49a6577f6fef170e308487a](https://github.com/AlexanderWilhelmsenBerg/Sodukromental/commit/5083583983c2ab23a49a6577f6fef170e308487a) |
+| Android identity | `org.sodukromental.debug` · `0.1.0+1` · minimum API 24 · target API 36 |
+| APK size | 165,081,214 bytes, with ARM64, ARMv7 and x86-64 builds |
+| APK SHA-256 | `3e4645771f74c13f8070c9b1de17d4b38fa5a3303950bd7f8f6978700899f9af` |
+| Debug signer SHA-256 | `ed0a1a3c6662739ed2688a66b673790fba8fd536c5afbdf54f07a8e46a73caa9` |
+
+The ZIP includes the checksum, signing receipt, source commit and a launch screenshot. On Linux, `sha256sum -c sodukromental-0.1.0-debug-android.apk.sha256` verifies the extracted APK. Open it on the phone and follow Android’s installation prompt. Android may ask to allow installs from the app you used to open the file. If using Android platform tools, `adb install -r sodukromental-0.1.0-debug-android.apk` installs it or upgrades a compatible signed preview. Compare signer digests before replacing a valued colony. Uninstalling a differently signed preview erases its local data.
+
+The Android 14 workflow installed these exact bytes, captured the opening, then installed build 2 with the same debug signing key. The campaign reopened with seed `61312`, two placed 4s and 2 DNA. The independent 5×5 Library save kept pencil candidate 5. Sixty regressions passed. The installed UI test finished the opening, resumed a Library puzzle, solved 5×5, and hatched a designed creature. The companion device test checked consent, visited the Android launcher and another app, and stopped via its notification, screen lock and permission revocation. The later companion test revisions change the test harness only. [APK and upgrade run](https://github.com/AlexanderWilhelmsenBerg/Sodukromental/actions/runs/45614087897) · [Android regression run](https://github.com/AlexanderWilhelmsenBerg/Sodukromental/actions/runs/45614047768) · [Companion device run](https://github.com/AlexanderWilhelmsenBerg/Sodukromental/actions/runs/45615700741) · [Android opening](evidence/android-14-opening.png)
+
+Windows, Linux and the iOS simulator compiled from the released source. Physical handset tilt, TalkBack, differences between Android manufacturers’ overlay controls, early puzzle discovery and late-game pacing are the priorities for playtesting. The stable release workflow also needs a configured production signing key and live update verification before publication. [Port builds](https://github.com/AlexanderWilhelmsenBerg/Sodukromental/actions/runs/45614087828) · [Independent review](agent-review.md) · [Slice register](debug-release-slices.md)
 
 The Library contains 28 authored puzzles for offline play and listing metadata for 32,523 Logic Masters puzzles. Additional author rules load when the Library syncs or opens an entry. **Automatically download Logic Masters puzzles** starts off. For a portal puzzle, save its assets while connected before trying an offline solve. The details page shows whether the entry can be played offline, viewed as a diagram or opened on the original site. The 67 verified Cracking the Cryptic badges work offline, with an internet connection required to play the linked video. [Library requirements](library-specification.md)
 
@@ -27,7 +39,7 @@ The documented opening path moves R2C2 → R1C2, R3C2 → R2C2, R3C3 → R3C2, a
 
 ## Feedback register
 
-Send reports to the project coordinator for routing by [slice owner](debug-release-slices.md). A repeatable crash, save loss, unsolvable required board or overlay consent bypass blocks the debug handoff. Record playability and balance observations for the next iteration.
+Open a repository issue and include the build, phone, steps, and expected and observed result. The coordinator routes each report to the slice owner, assigns a regression or playtest, and records the retest. A repeatable crash, lost save, unsolvable board or outing without consent takes priority. [Report feedback](https://github.com/AlexanderWilhelmsenBerg/Sodukromental/issues/new) · [Slice owners](debug-release-slices.md)
 
 | ID | Build, device and OS | Slice | Starting state and reproduction | Expected and actual result | Severity | Owner and next action | Regression or playtest | Retest and status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
