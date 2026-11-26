@@ -1,5 +1,7 @@
 # Logic Masters Deutschland library specification
 
+The [Phase 2 SudokuPad and downloads investigation](phase-2-sudoku-library.md) specifies the next player controls, resolver and offline acceptance cases.
+
 This specification defines the Android-first Sudoku Library in [Sodukromental](game-specification.md). The Library includes the full Logic Masters Deutschland Sudoku catalog and a standalone edition of every authored Sodukromental Sudoku board, including alternate finales and expeditions. All Library content is available from first launch as the catalog loads, independent of colony progress. The Sudoku Library will be offered to Logic Masters Deutschland free of charge.
 
 ## Player experience

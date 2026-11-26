@@ -1,5 +1,7 @@
 # Sodukromental game specification
 
+The [Phase 2 expansion](phase-2-expansion.md) specifies the next debug iteration, including the new number pad, breaking the 9×9 grid and owned torch crews.
+
 Draft for design discussion
 
 Sodukromental is an offline-first game that ships on Android first, with iOS, Windows, and Linux as later targets. **Library** lets players find and solve variant Sudoku by rule. **Incremental** begins with a sliding Sudoku and grows the board from 4×4 through 9×9. A colony of pixel creatures gathers the new digits. After the first 9×9 clear, variants arrive as events on the board. A worm draws a Renban line and eats digits, and torchbearers reveal puzzles hidden in fog.

@@ -1,5 +1,7 @@
 # Creature creator
 
+The [Phase 2 colony specification](phase-2-colony.md) replaces the appearance-led creator in the next expansion and defines compatibility for existing creatures.
+
 After 5×5, press growth choices to build a creature. Each choice shapes a shared preview and can open more choices elsewhere in the graph. The selected inputs form a recipe for a procedural individual. A second hatch from the same recipe can have a different color, markings, favorite digit, or personality. The tutorial starts with one inexpensive amoeba that favors 4 and draws its own appearance and personality from the run seed. [Evolve’s branching evolution](https://github.com/pmotschmann/Evolve/wiki/Evolution)
 
 ## Growth paths

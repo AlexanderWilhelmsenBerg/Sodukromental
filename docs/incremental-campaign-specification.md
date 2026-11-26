@@ -1,5 +1,7 @@
 # Incremental campaign specification
 
+See the [Phase 2 board and staffing requirements](phase-2-expansion.md) and [settlement expansion](phase-2-colony.md) for proposed changes to the debug campaign.
+
 The campaign starts with three draggable 4s and ends when the player clears a chosen finale and finishes their civilization’s Meeting Hall. Afterward they can explore the other routes, tackle expeditions, or prestige into a new seed. The [game specification](game-specification.md) defines the sliding puzzle, growing board, creatures, and economy.
 
 ## The play loop
