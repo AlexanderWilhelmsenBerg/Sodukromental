@@ -126,7 +126,7 @@ Let one idle worker claim each incident. Recheck its target before committing th
 
 ### Puzzle rewards and grid upgrades
 
-Use these amounts as the first playtest budget. Each placement or clear pays once per run, with a stable reward ID so retry and resume preserve the same balance.
+These baseline amounts also fund the [Phase 2 campaign balance](phase-2-incremental-balance.md). That specification gives each producer a finite batch between authored first clears. Use the amounts below as the first playtest budget. Each placement or clear pays once per run, with a stable reward ID so retry and resume preserve the same balance.
 
 | Milestone | DNA | RNA | Opens |
 | --- | ---: | ---: | --- |

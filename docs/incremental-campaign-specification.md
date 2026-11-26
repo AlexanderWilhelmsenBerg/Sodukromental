@@ -1,6 +1,6 @@
 # Incremental campaign specification
 
-See the [Phase 2 board and staffing requirements](phase-2-expansion.md) and [settlement expansion](phase-2-colony.md) for proposed changes to the debug campaign.
+See the [Phase 2 board and staffing requirements](phase-2-expansion.md) and [settlement expansion](phase-2-colony.md) for proposed changes to the debug campaign. The [Phase 2 incremental balance specification](phase-2-incremental-balance.md) governs producer batches, work orders, difficulty targets and their debug checks.
 
 The campaign starts with three draggable 4s and ends when the player clears a chosen finale and finishes their civilization’s Meeting Hall. Afterward they can explore the other routes, tackle expeditions, or prestige into a new seed. The [game specification](game-specification.md) defines the sliding puzzle, growing board, creatures, and economy.
 
@@ -27,7 +27,7 @@ The proposed route to a first ending uses **16 boards**. Thirteen shared encount
 | 6 | Solve the first 9×9 with ordinary Sudoku rules. | Open the variant campaign. |
 | 7 | The Renban worm eats loose digits and introduces gravity. | Unlock the variant map and saved rule explanations. |
 | 8 | Thermometer lesson. | Add the thermometer rule to the reference. |
-| 9 | Halo fog lesson. | Open a torchbearer assignment. The amoeba can cover it. |
+| 9 | Halo fog lesson. | Open a torchbearer assignment. In Phase 2 the amoeba can light the first patch and a second owned worker handles the ordinary handoff. One Helper uses sequential lamps. |
 | 10 | Kropki lesson with white and black dots. | Add both dot types to the reference. |
 | 11 | German Whispers lesson. | Add the line rule to the reference. |
 | 12 | Killer cages lesson. | Add cage sums to the reference. |
@@ -114,7 +114,7 @@ For every value, calculate demand from the board’s required count, placed copi
 
 Use a **2-second first trip**, **3 seconds for an ordinary digit or letter trip**, and **2 seconds for a basic torch delivery** as initial playtest values. Quick steps shortens ordinary digit trips by 25 percent. Extra digit grip lets a creature carry one additional copy of the requested digit per trip. Spend the guaranteed puzzle rewards on the first designed creature and both starter producers, or continue with the amoeba and spend the same resources later. The nest adds an optional worker slot. Progress past the tutorial depends on puzzle clears and the finale’s glyphs, so speculative purchases and random favorites cannot block completion. [Creature paths and job effects](creature-creator-specification.md)
 
-When the player returns, show a single summary of producer output and completed trips. The two-minute production cap follows the main specification. Settle trips already queued at departure, honoring their reservations and the destination capacity. Resume new restock requests when the game is open. Restore the same board and visible fog cells.
+When the player returns, show a single summary of producer output and completed trips. The two-minute production cap per absence applies within the [remaining Phase 2 batch](phase-2-incremental-balance.md#let-a-solved-puzzle-finish-the-producers-work). Settle trips already queued at departure, honoring their reservations and the destination capacity. Resume new restock requests when the game is open. Restore the same board and visible fog cells.
 
 ## Rules, feedback, and difficulty
 
@@ -135,7 +135,7 @@ When the player returns, show a single summary of producer output and completed 
 
 ## What to verify before release
 
-1. Complete the required route from a fresh run with the amoeba and no passive purchases. Validate every board, use each fog path, finish the Meeting Hall, and reach the recorded ending. Repeat with the intended upgrade path and alternate creature recipes.
+1. Complete the required route from a fresh run with the amoeba, freely welcomed residents and no passive purchases. Use the amoeba alone for One Helper. Validate every board, use each fog path, finish the Meeting Hall, and reach the recorded ending. Repeat with the intended upgrade path and alternate creature recipes.
 2. Account for all tiles during board growth, worm removal, helper offers, cancellation, placement, undo, and restore. Test pauses midway through a glyph delivery or a fog reveal and confirm each reward or delivery is applied once.
 3. Playtest the tutorial with first-time players. Check whether they discover that the sentence’s 4s are movable, understand why the amoeba exists, and can request the next digit without help. Use a small graduated cue if testing shows they miss the sentence interaction.
 4. Measure idle gaps during a solve. Use **five seconds** as the initial limit for a stretch where a player has a deduction ready and can do nothing except wait for a digit or torch. Also check that players can describe why they would pick one helper or upgrade over another.
