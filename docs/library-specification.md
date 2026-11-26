@@ -1,6 +1,6 @@
 # Logic Masters Deutschland library specification
 
-The [Phase 2 SudokuPad and downloads investigation](phase-2-sudoku-library.md) specifies the next player controls, resolver and offline acceptance cases.
+Phase 2 uses Sodukromental’s own Flutter player for every **Play** and **Resume** action. SudokuPad and F-Puzzles links are inputs to the importer. The native controls, coverage fixtures and offline release criteria are in the [Phase 2 player specification](phase-2-sudoku-library.md#native-solver-acceptance).
 
 This specification defines the Android-first Sudoku Library in [Sodukromental](game-specification.md). The Library includes the full Logic Masters Deutschland Sudoku catalog and a standalone edition of every authored Sodukromental Sudoku board, including alternate finales and expeditions. All Library content is available from first launch as the catalog loads, independent of colony progress. The Sudoku Library will be offered to Logic Masters Deutschland free of charge.
 
@@ -8,14 +8,15 @@ This specification defines the Android-first Sudoku Library in [Sodukromental](g
 
 - **Browse** shows title, author, difficulty, rule chips, availability, personal progress, and a **Featured on CtC** badge when verified. Search title and author. Sort by publication date, difficulty, rating, title, last played, or **Featured on CtC**. Show unknown difficulty and rating separately from scored entries. Identify difficulty estimated by the author when the portal provides that distinction.
 - **Filter** by one or more rules with **Any** and **All** matching. Also filter by size, difficulty, saved status, progress, or **Featured on CtC**. Rule exclusions and a **Classic only** option require enough rule information to assert absence. Entries with incomplete rule coverage can be included in positive matches and show a **More rules may apply** marker.
-- **Puzzle details** show the author’s original rules, tappable short rule explanations, a clue preview when available, and the original puzzle link. Featured entries show a **Watch solve on YouTube** link to the specific video. Players can save one puzzle or select several from a filtered list. The download queue shows progress and lets players retry or cancel individual entries.
+- **Puzzle details** show the author’s original rules, tappable short rule explanations, a clue preview when available, and a **Read setter’s page** link for the Logic Masters entry. Featured entries show a **Watch solve on YouTube** link to the specific video. Players can save one puzzle or select several from a filtered list. The download queue shows progress and lets players retry or cancel individual entries.
 - **Saved** opens from the local database, including after a cold launch in airplane mode. Players can search, sort, filter, and resume without connectivity. Removing a download releases its puzzle assets and preserves the reference and solve record if the player wants to download it again.
 
 | Availability | Contents on the device | Player action |
 | --- | --- | --- |
-| **Play offline** | Complete board, local rules, all necessary clue artwork or geometry, and a compatible player. | Play and resume locally. Show **Manual check** when the puzzle requires the player to judge a custom rule. |
+| **Play offline** | Complete board, local rules, all necessary clue artwork or geometry, and a verified definition supported by Sodukromental’s player. | Play and resume locally. Show **Manual check** when the puzzle requires the player to judge a custom rule. |
 | **View offline** | A readable diagram and its instructions. | Open the saved reference locally. |
-| **Open original** | Catalog metadata and the original URL. | Open the portal when connected. |
+| **Saved · awaiting player support** | Verified puzzle payload retained for a future capability update. | Show the specific unsupported feature. Recheck locally after an app upgrade. |
+| **Catalog entry** | Catalog metadata and the setter’s portal URL. | Offer **Save for offline**. **Read setter’s page** opens the Logic Masters entry when connected. |
 
 Save deduced digits, notes, undo position, and completion separately from downloads. Use the same board controls as Incremental, including drag or tap placement, with ordinary Sudoku input in the Library. Offer **Check board** when all active constraints can be verified. A known single-solution puzzle can use an authorized complete solution for a final check when all clues are faithfully displayed. Mark manual-check solves explicitly. An original link gives access to the portal’s own solution-code workflow.
 
@@ -25,7 +26,7 @@ Bundle the authored Sodukromental boards with the app. Their Library editions re
 
 Add **Settings → Library → Automatically download Logic Masters puzzles**. The default is **Off**, including for profiles with no saved preference. Manual downloads are available in either setting.
 
-When enabled, queue eligible puzzles across the full synchronized Logic Masters catalog, starting with the most recent, and add entries as older pages and new releases are discovered. Fetch puzzle content from its designated separate host and try to save a playable copy first. If only the complete rules and diagram can be stored, save those as **View offline**. Other entries keep **Open original**.
+When enabled, queue eligible puzzles across the full synchronized Logic Masters catalog, starting with the most recent, and add entries as older pages and new releases are discovered. Fetch puzzle content from its designated separate host and try to save a playable copy first. If only the complete rules and diagram can be stored, save those as **View offline**. Retain verified packages awaiting native capability support. Other entries keep their catalog metadata and source credit.
 
 Show **Queued**, **Downloading**, **Paused**, or a failure reason in the download queue. Resume when connected and pause when reported device storage is insufficient. Reuse one job per puzzle revision for automatic and manual requests. Prioritize a manual request when it shares an automatic job. Turning the setting off pauses automatic jobs. Saved puzzles stay available in **Saved**, and a manually removed download is skipped by automatic jobs until the player explicitly saves it again.
 

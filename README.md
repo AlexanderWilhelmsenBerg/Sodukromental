@@ -4,7 +4,7 @@ A portrait Sudoku game for Android. Slide tiles to free three missing 4s, hatch 
 
 The **Sudoku** tab opens independently of the colony. Browse the Logic Masters Deutschland catalog and the 28 original game boards, filter by rule, or look for a verified Cracking the Cryptic solve. Automatic puzzle-content downloads are off by default. The Library displays each puzzle’s available play, diagram, or source options.
 
-The [Phase 2 expansion specification](docs/phase-2-expansion.md) covers the next creature and civilization systems, board interactions, and SudokuPad-style Library.
+The [Phase 2 expansion specification](docs/phase-2-expansion.md) covers the next creature and civilization systems, board interactions, and Sodukromental’s own offline Sudoku player with SudokuPad-style controls.
 
 ## Run locally
 

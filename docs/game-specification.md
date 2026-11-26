@@ -253,7 +253,7 @@ Use **Dart with Flutter and Flame** in one project. Flutter handles the Library,
 | `sensors_plus` | Accelerometer readings on Android and iOS. The desktop input adapter uses keys and direction buttons for gravity. | Renban and gravity prototype. [sensors_plus](https://pub.dev/packages/sensors_plus) |
 | `characters` | Split harvestable description glyphs on Unicode grapheme boundaries. | First nest. [characters](https://pub.dev/packages/characters) |
 | `http` and `html` | HTTP client and HTML parser for the approved catalog integration. Parse portal pages in the source adapter and return normalized records to shared code. | Catalog integration. [http](https://pub.dev/packages/http) · [html](https://pub.dev/packages/html) |
-| `url_launcher` | Open original puzzle pages and verified CtC solve videos in the platform’s external app or browser. | Library links. [url_launcher](https://pub.dev/packages/url_launcher) |
+| `url_launcher` | Open the Logic Masters setter page and verified CtC video on explicit request. Puzzle play and resume use the in-app Flutter board. | Library links. [url_launcher](https://pub.dev/packages/url_launcher) |
 | `package_info_plus` | Read the installed version and Android build number for notifications from the GitHub release channel. | Android updates. [package_info_plus](https://pub.dev/packages/package_info_plus) |
 | `flutter_test` and `integration_test` | Domain, widget, save and resume, and device tests. | Development and CI. [Flutter testing](https://docs.flutter.dev/testing/overview) |
 
