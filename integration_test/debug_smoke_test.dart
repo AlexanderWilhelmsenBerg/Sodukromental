@@ -79,7 +79,15 @@ void main() {
       await tester.enterText(search, 'Uneven ground');
       FocusManager.instance.primaryFocus?.unfocus();
       await tester.pump(const Duration(milliseconds: 300));
-      await tap(find.widgetWithText(ListTile, 'Uneven ground'));
+      // The result card can be taller than the visible list while Android
+      // closes its keyboard. Tap the visible title, as a player can do.
+      final resultTitle = find.descendant(
+        of: find.byType(ListTile),
+        matching: find.text('Uneven ground'),
+      );
+      await waitFor(resultTitle);
+      await tester.ensureVisible(resultTitle);
+      await tap(resultTitle.hitTestable());
       await tap(find.text('Play puzzle'));
       await tap(cell(4));
       await tap(
