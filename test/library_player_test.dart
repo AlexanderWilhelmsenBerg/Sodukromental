@@ -217,6 +217,10 @@ void main() {
   testWidgets('covered guess is visible, overwritable and undoable in UI', (
     tester,
   ) async {
+    tester.view.physicalSize = const Size(320, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     final folder = Directory.systemTemp.createTempSync('library-player-ui');
     addTearDown(() => folder.deleteSync(recursive: true));
     final store = await LibraryStore.open(
@@ -266,6 +270,7 @@ void main() {
       '3',
     );
 
+    await tester.ensureVisible(find.widgetWithText(FilledButton, '7'));
     await tester.tap(find.widgetWithText(FilledButton, '7'));
     await tester.pump(const Duration(milliseconds: 250));
     expect(
@@ -280,6 +285,76 @@ void main() {
           .history[store.getSave(_entry.id, _entry.revision)!.index]
           .values[1],
       '3',
+    );
+  });
+
+  testWidgets('ordinary keypad is 3 by 3 and visible counts never leak fog', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(540, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final folder = Directory.systemTemp.createTempSync('library-keypad-ui');
+    addTearDown(() => folder.deleteSync(recursive: true));
+    final store = await LibraryStore.open(
+      executor: NativeDatabase(File('${folder.path}/library.sqlite')),
+      records: const [],
+      includeAuthored: false,
+    );
+    addTearDown(store.close);
+    final givens = List<String?>.filled(81, null)
+      ..[0] = '7'
+      ..[10] = '7';
+    final visible = {for (var cell = 0; cell < 81; cell++) cell}..remove(10);
+    final puzzle = LibraryDownload(
+      _entry,
+      definition: LibraryPuzzleDefinition(
+        width: 9,
+        height: 9,
+        symbols: [for (var value = 1; value <= 9; value++) '$value'],
+        playable: {for (var cell = 0; cell < 81; cell++) cell},
+        givens: givens,
+        regions: [
+          for (var cell = 0; cell < 81; cell++)
+            (cell ~/ 9 ~/ 3) * 3 + (cell % 9 ~/ 3),
+        ],
+        initiallyVisible: visible,
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LibraryPlayer(store: store, puzzle: puzzle),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    Rect key(String symbol) =>
+        tester.getRect(find.byKey(ValueKey('library-key-$symbol')));
+    expect(key('1').center.dy, closeTo(key('2').center.dy, .1));
+    expect(key('2').center.dy, closeTo(key('3').center.dy, .1));
+    expect(key('4').center.dy, greaterThan(key('1').center.dy));
+    expect(key('4').center.dx, closeTo(key('1').center.dx, .1));
+    expect(key('1').height, greaterThanOrEqualTo(48));
+    expect(find.byKey(const ValueKey('symbol-count-7')), findsNothing);
+
+    await tester.tap(find.byTooltip('Player options'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Show keypad counts'));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<Text>(find.byKey(const ValueKey('symbol-count-7'))).data,
+      '1 visible',
+    );
+
+    await tester.ensureVisible(find.byKey(const ValueKey('cell-10')));
+    await tester.tap(find.byKey(const ValueKey('cell-10')));
+    await tester.ensureVisible(find.byKey(const ValueKey('library-key-7')));
+    await tester.tap(find.byKey(const ValueKey('library-key-7')));
+    await tester.pump();
+    expect(
+      tester.widget<Text>(find.byKey(const ValueKey('symbol-count-7'))).data,
+      '2 visible',
     );
   });
 }

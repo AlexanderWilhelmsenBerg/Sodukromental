@@ -35,6 +35,7 @@ class _LibraryPlayerState extends State<LibraryPlayer>
   final _boardTransform = TransformationController();
   Timer? _saveTimer;
   Timer? _clockTimer;
+  bool _showCounts = false;
 
   @override
   void initState() {
@@ -208,16 +209,29 @@ class _LibraryPlayerState extends State<LibraryPlayer>
               icon: const Icon(Icons.redo),
             ),
             PopupMenuButton<String>(
+              tooltip: 'Player options',
               onSelected: _menu,
-              itemBuilder: (_) => const [
-                PopupMenuItem(value: 'rules', child: Text('Rules sheet')),
-                PopupMenuItem(value: 'help', child: Text('Input help')),
-                PopupMenuItem(value: 'replay', child: Text('Replay solve')),
+              itemBuilder: (_) => [
+                const PopupMenuItem(value: 'rules', child: Text('Rules sheet')),
+                const PopupMenuItem(value: 'help', child: Text('Input help')),
                 PopupMenuItem(
+                  value: 'counts',
+                  child: Text(
+                    _showCounts ? 'Hide keypad counts' : 'Show keypad counts',
+                  ),
+                ),
+                const PopupMenuItem(
+                  value: 'replay',
+                  child: Text('Replay solve'),
+                ),
+                const PopupMenuItem(
                   value: 'calculator',
                   child: Text('Cage calculator'),
                 ),
-                PopupMenuItem(value: 'restart', child: Text('Restart attempt')),
+                const PopupMenuItem(
+                  value: 'restart',
+                  child: Text('Restart attempt'),
+                ),
               ],
             ),
           ],
@@ -270,7 +284,7 @@ class _LibraryPlayerState extends State<LibraryPlayer>
                       ),
                     ),
                     const SizedBox(height: 8),
-                    _Keypad(controller: controller),
+                    _Keypad(controller: controller, showCounts: _showCounts),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
@@ -481,6 +495,8 @@ class _LibraryPlayerState extends State<LibraryPlayer>
           'Input help',
           'Tap a cell to select it. Turn on Add selection for disjoint cells. Long press toggles one cell. V Value, C Corner, M Center, L Letter, P Pen. Ctrl+A selects all; Ctrl+Z/Shift+Ctrl+Z undo/redo; Delete erases the active layer. ABC / 123 changes keyboard input without changing selection.',
         );
+      case 'counts':
+        setState(() => _showCounts = !_showCounts);
       case 'replay':
         _replay();
       case 'calculator':
@@ -666,8 +682,9 @@ class _ToolBar extends StatelessWidget {
 }
 
 class _Keypad extends StatelessWidget {
-  const _Keypad({required this.controller});
+  const _Keypad({required this.controller, required this.showCounts});
   final LibraryPlayerController controller;
+  final bool showCounts;
   @override
   Widget build(BuildContext context) {
     final symbols = controller.mode == LibraryInputMode.color
@@ -675,57 +692,102 @@ class _Keypad extends StatelessWidget {
         : controller.alphabetic
         ? [for (var code = 65; code <= 90; code++) String.fromCharCode(code)]
         : controller.definition.symbols;
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    final numericGrid =
+        !controller.alphabetic && controller.mode != LibraryInputMode.color;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        OutlinedButton(
-          onPressed: controller.toggleAlphabet,
-          child: Text(controller.alphabetic ? '123' : 'ABC'),
+        Row(
+          children: [
+            OutlinedButton(
+              onPressed: controller.toggleAlphabet,
+              child: Text(controller.alphabetic ? '123' : 'ABC'),
+            ),
+            if (controller.alphabetic)
+              IconButton(
+                tooltip: controller.upperCase
+                    ? 'Use lowercase notes'
+                    : 'Use uppercase notes',
+                onPressed: controller.toggleCase,
+                icon: Text(controller.upperCase ? 'A' : 'a'),
+              ),
+            if (showCounts && numericGrid)
+              const Padding(
+                padding: EdgeInsets.only(left: 8),
+                child: Text('Visible counts'),
+              ),
+          ],
         ),
-        if (controller.alphabetic)
-          IconButton(
-            tooltip: controller.upperCase
-                ? 'Use lowercase notes'
-                : 'Use uppercase notes',
-            onPressed: controller.toggleCase,
-            icon: Text(controller.upperCase ? 'A' : 'a'),
-          ),
-        Expanded(
-          child: Wrap(
+        if (numericGrid)
+          GridView.count(
+            key: const ValueKey('library-numeric-keypad'),
+            crossAxisCount: 3,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            mainAxisSpacing: 5,
+            crossAxisSpacing: 5,
+            mainAxisExtent: math.max(
+              48.0,
+              MediaQuery.textScalerOf(context).scale(showCounts ? 40 : 24) + 8,
+            ),
+            children: [for (final symbol in symbols) _key(context, symbol)],
+          )
+        else
+          Wrap(
             spacing: 4,
             runSpacing: 4,
             children: [
               for (final symbol in symbols)
-                Semantics(
-                  button: true,
-                  label: controller.mode == LibraryInputMode.color
-                      ? '$symbol color'
-                      : 'Digit $symbol, ${controller.definition.playable.where((cell) => !controller.covered(cell) && controller.displayedValue(cell) == symbol).length} visible; enter as ${controller.mode.name}',
-                  child: SizedBox.square(
-                    dimension: 44,
-                    child: Draggable<String>(
-                      data: symbol,
-                      feedback: Material(
-                        borderRadius: BorderRadius.circular(12),
-                        child: SizedBox.square(
-                          dimension: 48,
-                          child: Center(child: Text(symbol)),
-                        ),
-                      ),
-                      child: FilledButton.tonal(
-                        style: FilledButton.styleFrom(padding: EdgeInsets.zero),
-                        onPressed: () => controller.apply(symbol),
-                        child: controller.mode == LibraryInputMode.color
-                            ? _ColorSwatch(symbol)
-                            : Text(symbol, textAlign: TextAlign.center),
-                      ),
-                    ),
-                  ),
-                ),
+                SizedBox.square(dimension: 48, child: _key(context, symbol)),
             ],
           ),
-        ),
       ],
+    );
+  }
+
+  Widget _key(BuildContext context, String symbol) {
+    final count = _visibleSymbolCount(controller, symbol);
+    return Semantics(
+      button: true,
+      label: controller.mode == LibraryInputMode.color
+          ? '$symbol color'
+          : 'Digit $symbol, $count visible; enter as ${controller.mode.name}',
+      child: Draggable<String>(
+        data: symbol,
+        feedback: Material(
+          borderRadius: BorderRadius.circular(12),
+          child: SizedBox.square(
+            dimension: 48,
+            child: Center(child: Text(symbol)),
+          ),
+        ),
+        child: FilledButton.tonal(
+          key: ValueKey('library-key-$symbol'),
+          style: FilledButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+            minimumSize: const Size(48, 48),
+          ),
+          onPressed: () => controller.apply(symbol),
+          child: controller.mode == LibraryInputMode.color
+              ? _ColorSwatch(symbol)
+              : showCounts && !controller.alphabetic
+              ? Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(symbol, textAlign: TextAlign.center),
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        '$count visible',
+                        key: ValueKey('symbol-count-$symbol'),
+                        style: Theme.of(context).textTheme.labelSmall,
+                      ),
+                    ),
+                  ],
+                )
+              : Text(symbol, textAlign: TextAlign.center),
+        ),
+      ),
     );
   }
 }
@@ -1531,6 +1593,13 @@ int? _selectedSum(LibraryPlayerController controller) {
   if (values.any((value) => value == null)) return null;
   return values.whereType<int>().fold<int>(0, (sum, value) => sum + value);
 }
+
+int _visibleSymbolCount(LibraryPlayerController controller, String symbol) =>
+    controller.definition.playable.where((cell) {
+      if (controller.displayedValue(cell) != symbol) return false;
+      return !controller.covered(cell) ||
+          controller.position.values[cell] == symbol;
+    }).length;
 
 List<List<int>> _combinations(
   List<int> symbols,
