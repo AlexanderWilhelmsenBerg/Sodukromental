@@ -18,6 +18,8 @@ Use a small saved learning model. Each distinct puzzle the companion helps clear
 | **4 shared clears and retained through prestige** | Starts visiting familiar parts of the app on its own, such as the home screen, Library edge, and its profile. The player can call it back from the companion control. |
 | **6 shared clears and retained through prestige** | May ask whether it can explore outside the app on Android. |
 
+The first campaign Halo clear also unlocks [Library torchbearer visits](phase-2-sudoku-library.md#fog-palette-and-visible-edges) for available residents. This in-app task uses the setter’s existing light and has its own visibility toggle. General companion roaming follows the retained-companion milestones above.
+
 Use visible UI events, known inventory, and the saved habit record. Its personality remains recognizable even as its routines improve. Roaming uses predefined waypoints outside puzzle cells and controls and pauses while the companion has priority work. A reduced-motion setting can show it waiting at its arrival point. Keep in-app visits available on Android, iOS, Windows, and Linux.
 
 ## Speech bubbles
