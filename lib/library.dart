@@ -10,6 +10,7 @@ import 'boards.dart';
 import 'creatures.dart';
 import 'library_artwork.dart';
 import 'library_diagram_sheet.dart';
+import 'library_event_log_view.dart';
 import 'library_models.dart';
 import 'library_player.dart';
 import 'library_store.dart';
@@ -149,6 +150,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
                       ),
                     ),
                   ),
+                  if (!_selecting)
+                    IconButton(
+                      tooltip: 'Library event log',
+                      icon: const Icon(Icons.receipt_long_outlined),
+                      onPressed: () => LibraryEventLogView.show(context, store),
+                    ),
                 ],
               ),
               body: SafeArea(
@@ -764,8 +771,7 @@ class _LibraryDetailsState extends State<_LibraryDetails> {
                   if (saved != null &&
                       saved.diagram != null &&
                       (hasDiagramDraft ||
-                          (saved.availability == LibraryAvailability.view &&
-                              saved.supportReasons.isEmpty)))
+                          saved.availability == LibraryAvailability.view))
                     FilledButton.icon(
                       icon: const Icon(Icons.grid_on),
                       label: Text(
@@ -837,6 +843,16 @@ class _LibraryDetailsState extends State<_LibraryDetails> {
                       label: const Text('Read setter’s page'),
                       onPressed: () => _external(context, entry.portal),
                     ),
+                  TextButton.icon(
+                    icon: const Icon(Icons.receipt_long_outlined),
+                    label: const Text('Puzzle event log'),
+                    onPressed: () => LibraryEventLogView.show(
+                      context,
+                      widget.store,
+                      puzzleId: entry.id,
+                      puzzleTitle: entry.title,
+                    ),
+                  ),
                 ],
               ),
               if (job?.reason case final reason?) Text(reason),

@@ -11,6 +11,7 @@ import 'package:flutter/painting.dart' show decodeImageFromList;
 import 'package:html/parser.dart' as html;
 
 import 'boards.dart';
+import 'library_events.dart';
 import 'library_import.dart';
 import 'library_models.dart';
 import 'library_source.dart';
@@ -22,7 +23,12 @@ class _LibraryDatabase extends GeneratedDatabase {
   Iterable<TableInfo<Table, Object?>> get allTables => const [];
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
+
+  Future<void> createEventLog() => customStatement(
+    'CREATE TABLE library_events (sequence INTEGER PRIMARY KEY, time TEXT NOT NULL, '
+    'puzzle TEXT NOT NULL, stage TEXT NOT NULL, message TEXT NOT NULL, location TEXT)',
+  );
 
   static const tables = [
     'catalog',
@@ -40,6 +46,10 @@ class _LibraryDatabase extends GeneratedDatabase {
           'CREATE TABLE $table (id TEXT PRIMARY KEY, body TEXT NOT NULL)',
         );
       }
+      await createEventLog();
+    },
+    onUpgrade: (_, from, to) async {
+      if (from < 2) await createEventLog();
     },
   );
 
@@ -90,6 +100,10 @@ class LibraryStore extends ChangeNotifier {
   final _diagramSheets = <String, Map<String, dynamic>>{};
   final _latest = <String, LibrarySave>{};
   final _jobs = <String, LibraryJob>{};
+  static const eventLimit = 400;
+  final _events = <LibraryEvent>[];
+  Future<void>? _eventWrites;
+  bool _eventNotificationPending = false;
   final _dismissed = <String>{};
   final _inFlightDetails = <String, Future<LibraryEntry>>{};
   final _blockedDetails = <String>{};
@@ -156,6 +170,23 @@ class LibraryStore extends ChangeNotifier {
 
   Future<void> _load(Iterable<LibraryEntry>? records) async {
     final results = await Future.wait(_LibraryDatabase.tables.map(_db.read));
+    final eventRows = await _db
+        .customSelect(
+          'SELECT time, puzzle, stage, message, location FROM library_events '
+          'ORDER BY sequence DESC LIMIT $eventLimit',
+        )
+        .get();
+    for (final row in eventRows.reversed) {
+      _events.add(
+        LibraryEvent(
+          time: DateTime.parse(row.read<String>('time')),
+          puzzleId: row.read<String>('puzzle'),
+          stage: row.read<String>('stage'),
+          message: row.read<String>('message'),
+          location: row.readNullable<String>('location'),
+        ),
+      );
+    }
     _entries.addAll(
       results[0].map(
         (key, value) => MapEntry(key, LibraryEntry.fromJson(value)),
@@ -282,6 +313,11 @@ class LibraryStore extends ChangeNotifier {
       );
       await _db.write('downloads', item.key, refreshed.toJson());
       _downloads[item.key] = refreshed;
+      _record(
+        old.entry.id,
+        'Saved',
+        'Upgraded the saved source package to native play offline.',
+      );
     }
   }
 
@@ -317,6 +353,86 @@ class LibraryStore extends ChangeNotifier {
   }
 
   Iterable<LibraryEntry> get entries => _entries.values;
+  List<LibraryEvent> events({String? puzzleId}) => _events.reversed
+      .where((e) => puzzleId == null || e.puzzleId == puzzleId)
+      .toList(growable: false);
+
+  void _record(String id, String stage, String message, [Uri? uri]) {
+    if (_disposed) return;
+    final singleLine = message.replaceAll(RegExp(r'[\r\n\t]+'), ' ').trim();
+    final event = LibraryEvent(
+      time: _now().toUtc(),
+      puzzleId: id,
+      stage: stage,
+      message: singleLine.length <= 400
+          ? singleLine
+          : '${singleLine.substring(0, 399)}…',
+      location: LibraryEvent.describeUri(uri),
+    );
+    _events.add(event);
+    if (_events.length > eventLimit) _events.removeAt(0);
+    final prior = _eventWrites;
+    final write = prior == null
+        ? _writeEvent(event)
+        : prior.then((_) => _writeEvent(event));
+    _eventWrites = write;
+    unawaited(
+      write.then((_) {
+        if (identical(_eventWrites, write)) _eventWrites = null;
+      }),
+    );
+    // Opening Puzzle details can start discovery inside a widget build.
+    if (!_eventNotificationPending) {
+      _eventNotificationPending = true;
+      scheduleMicrotask(() {
+        _eventNotificationPending = false;
+        _changed();
+      });
+    }
+  }
+
+  Future<void> _writeEvent(LibraryEvent event) async {
+    try {
+      await _db.transaction(() async {
+        await _db.customStatement(
+          'INSERT INTO library_events(time, puzzle, stage, message, location) VALUES (?, ?, ?, ?, ?)',
+          [
+            event.time.toIso8601String(),
+            event.puzzleId,
+            event.stage,
+            event.message,
+            event.location,
+          ],
+        );
+        await _db.customStatement(
+          'DELETE FROM library_events WHERE sequence <= (SELECT MAX(sequence) FROM library_events) - ?',
+          [eventLimit],
+        );
+      });
+    } on SqliteException {
+      // Keep diagnostics visible in memory if the device cannot write them.
+    } on FileSystemException {
+      // A log write must never abort a puzzle download.
+    }
+  }
+
+  Future<LibraryResponse> _trackedFetch(String id, Uri uri) async {
+    _record(id, 'Request', 'Fetching source.', uri);
+    try {
+      final response = await _fetch(uri);
+      _record(
+        id,
+        'Response',
+        'HTTP ${response.status} · ${response.bytes.length} bytes.',
+        uri,
+      );
+      return response;
+    } on LibraryRequestFailure catch (error) {
+      _record(id, 'Request failed', error.message, uri);
+      rethrow;
+    }
+  }
+
   Iterable<LibraryJob> get jobs => _jobs.values;
   Iterable<LibraryDownload> archivedDownloads(String id) => _archives.entries
       .where((item) => item.key.startsWith('$id|archive|'))
@@ -625,7 +741,7 @@ class LibraryStore extends ChangeNotifier {
       for (final entry in detailRows) {
         if (_disposed) break;
         try {
-          await details(entry.id, language: language);
+          await details(entry.id, language: language, logEvents: false);
         } on FormatException {
           _blockedDetails.add(entry.id);
         } on LibraryRequestFailure catch (error) {
@@ -639,10 +755,12 @@ class LibraryStore extends ChangeNotifier {
     } on LibraryRequestFailure catch (error) {
       if (_disposed) return;
       syncMessage = error.message;
+      _record('', 'Catalog', error.message);
       failed = true;
       if (error.retry) _scheduleSync(error.seconds);
     } on FormatException catch (error) {
       syncMessage = error.message;
+      _record('', 'Catalog', error.message);
       failed = true;
     } finally {
       syncing = false;
@@ -670,6 +788,7 @@ class LibraryStore extends ChangeNotifier {
     String id, {
     String language = 'en',
     bool refresh = false,
+    bool logEvents = true,
   }) {
     final old = _entries[id]!;
     if (_disposed ||
@@ -684,20 +803,26 @@ class LibraryStore extends ChangeNotifier {
     final key = '$id|$language';
     return _inFlightDetails.putIfAbsent(
       key,
-      () => _fetchDetails(old, language).whenComplete(() {
+      () => _fetchDetails(old, language, logEvents).whenComplete(() {
         _inFlightDetails.remove(key);
       }),
     );
   }
 
-  Future<LibraryEntry> _fetchDetails(LibraryEntry old, String selected) async {
+  Future<LibraryEntry> _fetchDetails(
+    LibraryEntry old,
+    String selected,
+    bool logEvents,
+  ) async {
     final languages = {selected, ...old.languages, 'en', 'de'};
     LibraryDetail? detail;
     for (final language in languages) {
       final url = old.portal.replace(
         queryParameters: {'chlang': language, 'id': old.id},
       );
-      final response = await _fetch(url);
+      final response = logEvents
+          ? await _trackedFetch(old.id, url)
+          : await _fetch(url);
       if (_disposed) return old;
       if ([404, 410].contains(response.status)) {
         if (response.status == 410) {
@@ -716,6 +841,9 @@ class LibraryStore extends ChangeNotifier {
           old,
           url,
           _now(),
+          trace: logEvents
+              ? (stage, message, uri) => _record(old.id, stage, message, uri)
+              : null,
         );
         if (candidate.entry.rules.isEmpty &&
             candidate.entry.content == null &&
@@ -724,7 +852,8 @@ class LibraryStore extends ChangeNotifier {
           continue;
         detail = candidate;
         break;
-      } on FormatException {
+      } on FormatException catch (error) {
+        if (logEvents) _record(old.id, 'Source page', error.message, url);
         if (language == languages.last) rethrow;
       }
     }
@@ -871,6 +1000,7 @@ class LibraryStore extends ChangeNotifier {
 
   Future<void> cancelDownload(String id) async {
     if (_disposed) return;
+    if (_jobs.containsKey(id)) _record(id, 'Download', 'Cancelled.');
     _dismissed.add(id);
     await _forgetJob(id);
     if (_disposed) return;
@@ -1042,6 +1172,16 @@ class LibraryStore extends ChangeNotifier {
   Future<void> _runJob(String id) async {
     final previous = _downloads[id];
     final selected = _entries[id]!;
+    _record(
+      id,
+      'Download',
+      '${_jobs[id]?.manual == true ? "Requested" : "Automatic"} download · ${selected.title}. '
+          'Discovery $libraryDiscoveryVersion, resolver ${LibraryImport.resolverVersion}.',
+      selected.portal,
+    );
+    Future<LibraryResponse> fetch(Uri uri) => _trackedFetch(id, uri);
+    void trace(String stage, String message, Uri? uri) =>
+        _record(id, stage, message, uri);
     final entry = await details(
       id,
       language: selected.requestedLanguage ?? selected.language,
@@ -1049,13 +1189,27 @@ class LibraryStore extends ChangeNotifier {
     );
     if (_disposed || !_jobAllowed(id)) return;
     if (entry.withdrawn) {
+      _record(
+        id,
+        'Source page',
+        'Puzzle withdrawn by the source.',
+        entry.portal,
+      );
       await _forgetJob(id);
       return;
     }
+    _record(
+      id,
+      'Source page',
+      '${entry.language} · ${(entry.content == null ? 0 : 1) + entry.alternativeContent.length} player link(s). '
+          '${entry.diagram == null ? "No diagram found." : "Diagram found."}',
+      entry.portal,
+    );
     LibraryDownload? result;
     try {
-      result = await LibraryImport.read(entry, _fetch);
+      result = await LibraryImport.read(entry, fetch, trace: trace);
     } on LibraryRequestFailure catch (error) {
+      trace('Resolver', error.message, null);
       if (error.retry) rethrow;
     }
     if (_disposed || !_jobAllowed(id)) return;
@@ -1069,7 +1223,12 @@ class LibraryStore extends ChangeNotifier {
         final uri = entry.portal.replace(
           queryParameters: {'chlang': language, 'id': id},
         );
-        final page = await _fetch(uri);
+        trace(
+          'Source page',
+          'Checking the $language edition for another play link.',
+          uri,
+        );
+        final page = await fetch(uri);
         if (page.status == 404 || page.status == 410) continue;
         LibraryEntry other;
         try {
@@ -1078,9 +1237,11 @@ class LibraryStore extends ChangeNotifier {
             entry,
             uri,
             _now(),
+            trace: trace,
           ).entry;
-        } on FormatException {
+        } on FormatException catch (error) {
           // A malformed translation must not discard the primary diagram.
+          trace('Source page', error.message, uri);
           continue;
         }
         if (other.withdrawn) continue;
@@ -1095,7 +1256,8 @@ class LibraryStore extends ChangeNotifier {
             'content': links.first,
             'alternativeContent': links.skip(1).toList(),
           }),
-          _fetch,
+          fetch,
+          trace: trace,
         );
         if (translated != null &&
             (result == null ||
@@ -1106,18 +1268,28 @@ class LibraryStore extends ChangeNotifier {
       }
     }
     if (_disposed || !_jobAllowed(id)) return;
+    for (final reason in result?.supportReasons ?? const <String>[]) {
+      trace('Import', reason, null);
+    }
     if ((result == null ||
             result.availability == LibraryAvailability.original) &&
         entry.diagram != null) {
       final link = Uri.tryParse(entry.diagram!);
       if (link != null && isLibraryDiagramLink(link)) {
-        final response = await _fetch(link);
+        final response = await fetch(link);
         if (response.status == 200 && await _decodeImage(response.bytes)) {
+          trace(
+            'Diagram',
+            'Verified the setter’s image for offline use.',
+            link,
+          );
           result = (result ?? LibraryDownload(entry)).withDiagram(
             base64Encode(response.bytes),
           );
         } else if (response.status == 429 || response.status >= 500) {
           requireLibraryResponse(response);
+        } else {
+          trace('Diagram', 'No usable puzzle image in the response.', link);
         }
       }
     }
@@ -1185,6 +1357,13 @@ class LibraryStore extends ChangeNotifier {
       _downloads[id] = result;
     }
     _jobs.remove(id);
+    _record(id, 'Saved', switch (result?.availability) {
+      LibraryAvailability.play => 'Native puzzle ready to play offline.',
+      LibraryAvailability.view => 'Diagram saved for an offline worksheet.',
+      LibraryAvailability.original =>
+        'Source reference saved. The native player cannot open this edition.',
+      null => 'No playable package or usable diagram found.',
+    });
   }
 
   Future<void> _pauseForStorage(String id) async {
@@ -1215,6 +1394,13 @@ class LibraryStore extends ChangeNotifier {
 
   Future<void> _putJob(LibraryJob job) async {
     _jobs[job.id] = job;
+    if (job.reason case final reason?) {
+      _record(
+        job.id,
+        job.state == LibraryJobState.failed ? 'Failed' : 'Paused',
+        reason,
+      );
+    }
     await _db.write('jobs', job.id, job.toJson());
   }
 
@@ -1264,6 +1450,7 @@ class LibraryStore extends ChangeNotifier {
         }),
       );
     } finally {
+      if (_eventWrites case final writes?) await writes;
       await _db.close();
       super.dispose();
     }

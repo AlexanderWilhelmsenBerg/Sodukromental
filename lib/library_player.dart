@@ -1282,10 +1282,26 @@ List<String> _visibleClueDescriptions(
             (center[1] as num) < 0 ||
             (center[0] as num) > definition.height ||
             (center[1] as num) > definition.width);
+    if (definition.hasFog && !outside && center is List && center.length >= 2) {
+      final row = center[0] as num, col = center[1] as num;
+      // A border dot belongs to both adjacent cells, and a corner to four.
+      final adjacent = {
+        for (final r in {row.floor(), row.ceil() - 1})
+          for (final c in {col.floor(), col.ceil() - 1})
+            if (r >= 0 &&
+                r < definition.height &&
+                c >= 0 &&
+                c < definition.width)
+              r * definition.width + c,
+      };
+      if (!adjacent.any(visible.contains)) continue;
+    }
     if (outside) detail += ' outside the grid';
     final label = ref['text'] ?? ref['value'] ?? ref['label'];
     final labelCell = cells.isEmpty ? null : cells.first;
-    if (label != null && (labelCell == null || visible.contains(labelCell)))
+    if (label != null &&
+        label.toString().isNotEmpty &&
+        (labelCell == null || visible.contains(labelCell)))
       detail += ', $label';
     for (var index = 1; index < points.length; index++) {
       final from = pointCell(points[index - 1]), to = pointCell(points[index]);

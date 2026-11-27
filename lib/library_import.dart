@@ -1,24 +1,28 @@
 import 'dart:convert';
 import 'dart:math' as math;
 
-import 'package:html/parser.dart' as html;
-
 import 'boards.dart';
 import 'library_digest.dart';
 import 'library_models.dart';
 import 'library_source.dart';
 
 class LibraryImport {
-  static const resolverVersion = 3;
+  static const resolverVersion = 4;
 
   static Future<LibraryDownload?> read(
     LibraryEntry entry,
-    LibraryFetch fetch,
-  ) async {
-    final resolution = await resolve(entry, fetch);
+    LibraryFetch fetch, {
+    LibraryTrace? trace,
+  }) async {
+    final resolution = await resolve(entry, fetch, trace: trace);
     if (resolution == null) return null;
     final decoded = decode(entry, resolution.payload);
     if (decoded == null) {
+      trace?.call(
+        'Decode',
+        'Retained the puzzle package. Its format is unsupported by the offline player.',
+        resolution.resolved,
+      );
       return LibraryDownload(
         entry,
         supportReasons: const [
@@ -27,6 +31,14 @@ class LibraryImport {
         provenance: _provenance(resolution),
       );
     }
+    final native = decoded.nativeDefinition;
+    trace?.call(
+      'Decode',
+      decoded.availability == LibraryAvailability.play && native != null
+          ? 'Decoded a ${native.width} × ${native.height} native puzzle.'
+          : decoded.supportReasons.join(' '),
+      resolution.resolved,
+    );
     final cached = await _cacheAssets(decoded.refs, fetch);
     final definition = decoded.definition == null
         ? null
@@ -52,6 +64,7 @@ class LibraryImport {
     LibraryEntry entry,
     LibraryFetch fetch, {
     int maxRedirects = 5,
+    LibraryTrace? trace,
   }) async {
     final links = {
       if (entry.content case final String link) link,
@@ -61,27 +74,62 @@ class LibraryImport {
     LibraryRequestFailure? temporaryFailure;
     for (final link in links.take(8)) {
       final original = Uri.tryParse(link);
-      if (original == null || !isLibraryPayloadLink(original)) continue;
+      if (original == null || !isLibraryPayloadLink(original)) {
+        trace?.call(
+          'Resolve',
+          'Skipped a destination outside supported puzzle sources.',
+          original,
+        );
+        continue;
+      }
+      trace?.call(
+        'Resolve',
+        'Trying an authored puzzle destination.',
+        original,
+      );
       try {
-        final found = await _resolveLink(entry, fetch, original, maxRedirects);
+        final found = await _resolveLink(
+          entry,
+          fetch,
+          original,
+          maxRedirects,
+          trace,
+        );
         if (found == null) continue;
         if (links.length == 1 ||
             decode(entry, found.payload)?.availability ==
                 LibraryAvailability.play) {
           return found;
         }
+        trace?.call(
+          'Resolve',
+          'Kept a reference package while checking the next authored edition for native play.',
+          found.resolved,
+        );
         reference ??= found;
       } on LibraryRequestFailure catch (error) {
+        trace?.call('Resolve', error.message, original);
         if (error.retry) {
           // Respect a host's explicit rate limit before trying another URL.
           if (error.seconds > 0) rethrow;
           temporaryFailure ??= error;
         }
       } on FormatException {
-        // A broken share must not hide another author-supplied edition.
+        trace?.call(
+          'Resolve',
+          'The share address or payload is malformed.',
+          original,
+        );
       }
     }
     if (temporaryFailure != null && reference == null) throw temporaryFailure;
+    if (reference == null) {
+      trace?.call(
+        'Resolve',
+        'No authored player destination yielded an identifiable puzzle package.',
+        entry.portal,
+      );
+    }
     return reference;
   }
 
@@ -90,73 +138,94 @@ class LibraryImport {
     LibraryFetch fetch,
     Uri original,
     int maxRedirects,
+    LibraryTrace? trace,
   ) async {
     var current = original;
-    final visited = <String>{};
+    var inspectedLanding = false;
+    final visited = <Uri>{};
+    LibraryResolution? reject(String message) {
+      trace?.call('Resolve', message, current);
+      return null;
+    }
+
+    LibraryResolution? verify(String payload, Uri from, int hop) {
+      final issue = _puzzlePayloadIssue(entry, payload);
+      if (issue != null) {
+        trace?.call('Verification', issue, from);
+        return null;
+      }
+      trace?.call(
+        'Verification',
+        'Accepted a puzzle package from the authored share.',
+        from,
+      );
+      return LibraryResolution(original, from, payload, hop);
+    }
+
     for (var hop = 0; hop <= maxRedirects; hop++) {
       final fpuzzlesId = current.queryParameters['id'];
       if (current.host.endsWith('f-puzzles.com') && fpuzzlesId != null) {
-        final slug = fpuzzlesId;
-        if (!RegExp(r'^[\w-]+$').hasMatch(slug)) return null;
-        current = Uri.https('tinyurl.com', '/$slug');
+        if (!RegExp(r'^[\w-]+$').hasMatch(fpuzzlesId))
+          return reject('The f-puzzles share identifier is invalid.');
+        current = Uri.https('tinyurl.com', '/$fpuzzlesId');
       }
-      if (!_safeShareUri(current) || !visited.add(current.toString())) {
-        return null;
-      }
-      final inline = _inlinePayload(current);
-      if (inline != null) {
-        if (!_validPuzzlePayload(entry, inline)) {
-          return null;
-        }
-        return LibraryResolution(original, current, inline, hop);
-      }
-      if (_aliasUri(current) || current.host == 'solvepaths.droste.ai') {
-        if (hop == maxRedirects) return null;
+      if (!_safeShareUri(current))
+        return reject(
+          'The source returned a destination outside supported puzzle routes.',
+        );
+      if (!visited.add(current)) return reject('The share links form a loop.');
+      if (isLibrarySetterLanding(current) || _aliasUri(current)) {
+        if (hop == maxRedirects)
+          return reject('Reached the share redirect limit.');
         final response = await fetch(current);
-        if (response.status == 429 || response.status >= 500) {
-          requireLibraryResponse(response);
-        }
-        if (current.host == 'solvepaths.droste.ai' && response.status == 200) {
-          final slug = current.pathSegments.last;
-          final target = html
-              .parse(response.text)
-              .querySelectorAll('a[href]')
-              .map((anchor) => Uri.tryParse(anchor.attributes['href']!))
-              .nonNulls
-              .where(
-                (uri) =>
-                    _safeShareUri(uri) &&
-                    uri.host == 'sudokupad.app' &&
-                    uri.pathSegments.length == 1 &&
-                    uri.pathSegments.single == slug,
-              )
-              .firstOrNull;
-          if (target == null) return null;
-          current = target;
+        if (response.status >= 300 && response.status < 400) {
+          final location = response.headers['location'];
+          if (location == null || location.isEmpty)
+            return reject('The redirect had no destination.');
+          final next = current.resolve(location);
+          if (!_safeShareUri(next))
+            return reject(
+              'The source redirected outside supported puzzle routes.',
+            );
+          trace?.call(
+            'Redirect',
+            'Following the authored share redirect.',
+            next,
+          );
+          current = next;
           continue;
         }
-        if (response.status < 300 || response.status >= 400) return null;
-        final location = response.headers['location'];
-        if (location == null) return null;
-        final next = current.resolve(location);
-        if (!_safeShareUri(next)) return null;
-        current = next;
+        requireLibraryResponse(response);
+        if (_aliasUri(current))
+          return reject('The short link did not redirect to a player.');
+        if (inspectedLanding)
+          return reject('Reached the limit for intermediate puzzle pages.');
+        inspectedLanding = true;
+        final target = librarySetterPageTarget(
+          response.text,
+          current,
+          entry,
+          trace,
+        );
+        if (target == null) return null;
+        current = target;
         continue;
       }
+      final inline = _inlinePayload(current);
+      if (inline != null) return verify(inline, current, hop);
       final lookup = _lookupKey(current);
-      if (lookup == null) return null;
+      if (lookup == null)
+        return reject(
+          'The player URL contains no supported puzzle identifier.',
+        );
       final api = Uri.https(
         'sudokupad.app',
         '/api/puzzle/${lookup.map(Uri.encodeComponent).join('/')}',
       );
-      final response = await fetch(api);
-      if (response.status == 404 || response.status == 410) return null;
-      final payload = requireLibraryResponse(response).text.trim();
-      if (_looksLikeHtml(payload) || !_validPuzzlePayload(entry, payload))
-        return null;
-      return LibraryResolution(original, api, payload, hop);
+      final response = requireLibraryResponse(await fetch(api));
+      return verify(response.text.trim(), api, hop);
     }
-    return null;
+    return reject('Reached the share redirect limit.');
   }
 
   static LibraryDownload? decode(LibraryEntry entry, String encoded) {
@@ -850,12 +919,12 @@ bool _safeShareUri(Uri uri) {
       uri.fragment.isNotEmpty) {
     return false;
   }
+  if (isLibrarySetterLanding(uri)) return true;
   return switch (uri.host) {
     'tinyurl.com' ||
     'www.tinyurl.com' ||
     'shorturl.at' ||
     'www.shorturl.at' => isLibraryPayloadLink(uri),
-    'solvepaths.droste.ai' => isLibraryPayloadLink(uri),
     'sudokupad.app' ||
     'www.sudokupad.app' ||
     'app.crackingthecryptic.com' ||
@@ -915,32 +984,43 @@ Map<String, dynamic> _provenance(LibraryResolution resolution) => {
   'identity': 'author-source',
 };
 
-bool _validPuzzlePayload(LibraryEntry entry, String encoded) {
-  if (LibraryImport.decode(entry, encoded) != null)
-    return _matchesEmbeddedTitle(entry, encoded);
+String? _puzzlePayloadIssue(LibraryEntry entry, String encoded) {
+  if (_looksLikeHtml(encoded))
+    return 'The server returned a web page instead of puzzle data.';
+  const malformed =
+      'The response does not contain an identifiable puzzle grid or package.';
   try {
     final prefix = _payloadPrefix.firstMatch(encoded);
     final format = prefix?.group(0);
     if (format == 'scf' || format == 'pack')
-      return encoded.length > prefix!.end;
+      return encoded.length > prefix!.end ? null : malformed;
+    if (format == 'classic') {
+      return RegExp(r'^[0-9.]{81}$').hasMatch(encoded.substring(prefix!.end))
+          ? null
+          : malformed;
+    }
     final body = prefix == null ? encoded : encoded.substring(prefix.end);
     final object = _decodeJson(body.startsWith('{') ? body : _decompress(body));
     final cells = object['cells'] ?? object['grid'];
-    return cells is List &&
-        cells.isNotEmpty &&
-        cells.length <= 25 &&
-        _matchesEmbeddedTitle(entry, encoded);
-  } on Object {
-    return false;
+    if (cells is! List ||
+        cells.isEmpty ||
+        cells.length > 25 ||
+        cells.any((row) => row is! List || row.isEmpty || row.length > 25))
+      return malformed;
+    if (!_matchesEmbeddedTitle(entry, object))
+      return 'The embedded title does not match this Logic Masters edition.';
+    return null;
+  } on FormatException {
+    return malformed;
+  } on ArgumentError {
+    return malformed;
+  } on TypeError {
+    return malformed;
   }
 }
 
-bool _matchesEmbeddedTitle(LibraryEntry entry, String encoded) {
+bool _matchesEmbeddedTitle(LibraryEntry entry, Map<String, dynamic> object) {
   try {
-    final prefix = _payloadPrefix.firstMatch(encoded);
-    if (prefix?.group(0) == 'classic') return true;
-    final body = prefix == null ? encoded : encoded.substring(prefix.end);
-    final object = _decodeJson(body.startsWith('{') ? body : _decompress(body));
     final metadata = object['metadata'];
     final cages = object['cages'];
     final legacyTitle = cages is List
@@ -1171,21 +1251,31 @@ bool _validSymbolSolution(
     if (value is List) return cells(value);
     if (value is! String) return null;
     final result = <int>{};
-    for (final part in value.split(RegExp(r'\s*[,;]\s*'))) {
-      final match = RegExp(
-        r'^r(\d+)c(\d+)(?:\s*-\s*r(\d+)c(\d+))?$',
-        caseSensitive: false,
-      ).firstMatch(part.trim());
-      if (match == null) return null;
-      final r1 = int.parse(match.group(1)!) - 1;
-      final c1 = int.parse(match.group(2)!) - 1;
-      final r2 = int.parse(match.group(3) ?? match.group(1)!) - 1;
-      final c2 = int.parse(match.group(4) ?? match.group(2)!) - 1;
-      for (var row = math.min(r1, r2); row <= math.max(r1, r2); row++) {
-        for (var col = math.min(c1, c2); col <= math.max(c1, c2); col++) {
-          if (row < 0 || row >= size || col < 0 || col >= size) return null;
-          result.add(row * size + col);
+    final coordinate = RegExp(
+      r'\s*r(\d+)c(\d+)(?:\s*-\s*r(\d+)c(\d+))?',
+      caseSensitive: false,
+    );
+    for (final group in value.split(RegExp('[,;]'))) {
+      // SudokuPad also concatenates coordinates, for example r1c3r1c4.
+      // Consume the whole expression so a partially understood link never
+      // authorizes a reveal.
+      final part = group.trim();
+      if (part.isEmpty) return null;
+      var offset = 0;
+      while (offset < part.length) {
+        final match = coordinate.matchAsPrefix(part, offset);
+        if (match == null) return null;
+        int index(int group) => (int.tryParse(match.group(group)!) ?? 0) - 1;
+        final r1 = index(1), c1 = index(2);
+        final r2 = match.group(3) == null ? r1 : index(3);
+        final c2 = match.group(4) == null ? c1 : index(4);
+        if ([r1, c1, r2, c2].any((i) => i < 0 || i >= size)) return null;
+        for (var row = math.min(r1, r2); row <= math.max(r1, r2); row++) {
+          for (var col = math.min(c1, c2); col <= math.max(c1, c2); col++) {
+            result.add(row * size + col);
+          }
         }
+        offset = match.end;
       }
     }
     return result;
@@ -1425,7 +1515,10 @@ bool _supportedRef(Map<String, dynamic> item, int size) {
 String _decompress(String source) {
   const alphabet =
       'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
-  final input = source
+  // Some API responses preserve URL escapes in the compressed alphabet.
+  // Decode only this field so original package bytes still identify the save.
+  final raw = source.contains('%') ? Uri.decodeComponent(source) : source;
+  final input = raw
       .replaceAll(' ', '+')
       .replaceAll('-', '+')
       .replaceAll('_', '/');

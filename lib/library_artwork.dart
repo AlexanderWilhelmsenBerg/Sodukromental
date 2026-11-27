@@ -193,7 +193,9 @@ class _ArtworkPainter extends CustomPainter {
       Colors.transparent,
     );
     final thickness =
-        _num(item['stroke-width'], 1) * step / _num(item['unit'], 64);
+        _num(item['thickness'] ?? item['stroke-width'], 1) *
+        step /
+        _num(item['unit'], 64);
     canvas.save();
     canvas.translate(center.dx, center.dy);
     canvas.rotate(_num(item['angle'], 0) * math.pi / 180);

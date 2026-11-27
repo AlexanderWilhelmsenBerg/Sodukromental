@@ -23,6 +23,7 @@ class LibraryResponse {
 }
 
 typedef LibraryFetch = Future<LibraryResponse> Function(Uri uri);
+typedef LibraryTrace = void Function(String stage, String message, Uri? uri);
 
 class LibraryRequestFailure implements Exception {
   const LibraryRequestFailure(
@@ -236,14 +237,15 @@ class LibraryDetail {
   final List<String> videoIds;
 }
 
-const libraryDiscoveryVersion = 1;
+const libraryDiscoveryVersion = 2;
 
 LibraryDetail parseLibraryDetail(
   String input,
   LibraryEntry original,
   Uri uri,
-  DateTime fetchedAt,
-) {
+  DateTime fetchedAt, {
+  LibraryTrace? trace,
+}) {
   final document = html.parse(input);
   final title = document.querySelector('.rp_titel h2');
   final body = document.querySelector('.rp_html');
@@ -289,18 +291,13 @@ LibraryDetail parseLibraryDetail(
   final difficulty = _difficulty(
     stats['difficulty:'] ?? stats['schwierigkeit:'],
   );
-  final candidates = _rankPlayerLinks(
-    body,
+  final candidates = _rankPlayerLinks(body, uri, _string(title), trace);
+  final diagram = _selectPuzzleDiagram(body, uri, candidates, trace);
+  trace?.call(
+    'Setter page',
+    'Found ${candidates.length} distinct player links and ${diagram == null ? 'no puzzle diagram' : 'a puzzle diagram'}.',
     uri,
-    _string(title),
-    original.author,
   );
-  final diagram = body
-      .querySelectorAll('img[src]')
-      .map((image) => _link(uri, image, 'src'))
-      .nonNulls
-      .where(isLibraryDiagramLink)
-      .firstOrNull;
   final videoIds = <String>[];
   for (final a in body.querySelectorAll('a[href]')) {
     final label = _string(a).toLowerCase();
@@ -382,84 +379,312 @@ String? libraryYouTubeId(Uri? uri) {
 
 bool isLibraryPayloadLink(Uri uri) =>
     uri.scheme == 'https' &&
-    switch (uri.host) {
-      'sudokupad.app' ||
-      'www.sudokupad.app' ||
-      'app.crackingthecryptic.com' ||
-      'app.crackingthecryptic.tv' ||
-      'sudokupad.svencodes.com' =>
-        uri.pathSegments.isNotEmpty ||
-            uri.queryParameters.containsKey('puzzleid'),
-      'f-puzzles.com' || 'www.f-puzzles.com' =>
-        uri.queryParameters.containsKey('load') ||
-            uri.queryParameters.containsKey('id'),
-      'tinyurl.com' ||
-      'www.tinyurl.com' ||
-      'shorturl.at' ||
-      'www.shorturl.at' =>
-        uri.pathSegments.length == 1 && uri.pathSegments.single.isNotEmpty,
-      'solvepaths.droste.ai' =>
-        uri.pathSegments.length == 2 &&
-            uri.pathSegments.first == 'play' &&
-            RegExp(r'^[\w-]+$').hasMatch(uri.pathSegments.last),
-      _ => false,
-    };
+    uri.userInfo.isEmpty &&
+    !uri.hasPort &&
+    uri.fragment.isEmpty &&
+    !isLibraryDiagramLink(uri) &&
+    (isLibrarySetterLanding(uri) ||
+        switch (uri.host) {
+          'sudokupad.app' ||
+          'www.sudokupad.app' ||
+          'app.crackingthecryptic.com' ||
+          'app.crackingthecryptic.tv' ||
+          'sudokupad.svencodes.com' =>
+            uri.pathSegments.isNotEmpty ||
+                uri.queryParameters.containsKey('puzzleid'),
+          'f-puzzles.com' || 'www.f-puzzles.com' =>
+            uri.queryParameters.containsKey('load') ||
+                uri.queryParameters.containsKey('id'),
+          'tinyurl.com' ||
+          'www.tinyurl.com' ||
+          'shorturl.at' ||
+          'www.shorturl.at' =>
+            uri.pathSegments.length == 1 && uri.pathSegments.single.isNotEmpty,
+          _ => false,
+        });
 
-/// Returns author player links in evidence order rather than DOM order.
-///
-/// Portal posts often cite an earlier puzzle before linking the current one.
-/// Keeping this policy here also makes manual and automatic acquisition use the
-/// same identity evidence.
+/// Only one puzzle at an identifiable provider route may be inspected for a
+/// forward link. Profiles, catalogs, random buttons and general sites are not
+/// routes to a particular edition.
+bool isLibrarySetterLanding(Uri uri) {
+  if (uri.scheme != 'https' ||
+      uri.userInfo.isNotEmpty ||
+      uri.hasPort ||
+      uri.hasQuery ||
+      uri.hasFragment)
+    return false;
+  final path = uri.pathSegments.where((part) => part.isNotEmpty).toList();
+  if (path.length != 2 || !RegExp(r'^[\w-]+$').hasMatch(path.last))
+    return false;
+  if (uri.host == 'solvepaths.droste.ai') return path.first == 'play';
+  if (path.first != 'puzzles') return false;
+  if (uri.host == 'sudokubank.com' || uri.host == 'www.sudokubank.com') {
+    return RegExp(
+      r'^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$',
+    ).hasMatch(path.last);
+  }
+  return RegExp(r'^[a-z0-9-]+\.github\.io$').hasMatch(uri.host) &&
+      !const {
+        'random',
+        'lucky',
+        'all',
+        'noscript',
+        'archive',
+        'index',
+        'search',
+      }.contains(path.last.toLowerCase());
+}
+
+/// Returns one authored share only when the landing page identifies this
+/// edition. The resolver still checks metadata in the downloaded board.
+Uri? librarySetterPageTarget(
+  String input,
+  Uri page,
+  LibraryEntry entry,
+  LibraryTrace? trace,
+) {
+  if (!isLibrarySetterLanding(page)) return null;
+  final document = html.parse(input);
+  if (page.host == 'solvepaths.droste.ai') {
+    // Solve Paths deliberately uses the same share ID as SudokuPad.
+    final slug = page.pathSegments.where((part) => part.isNotEmpty).last;
+    final target = document
+        .querySelectorAll('a[href]')
+        .map((a) => _link(page, a))
+        .nonNulls
+        .where(
+          (uri) =>
+              isLibraryPayloadLink(uri) &&
+              uri.host == 'sudokupad.app' &&
+              uri.pathSegments.length == 1 &&
+              uri.pathSegments.first == slug,
+        )
+        .firstOrNull;
+    trace?.call(
+      'Setter helper',
+      target == null
+          ? 'The puzzle page did not link to its corresponding player identifier.'
+          : 'Matched the intermediate page and player identifiers.',
+      target ?? page,
+    );
+    return target;
+  }
+  final article =
+      document.querySelector('article') ?? document.querySelector('main');
+  if (article == null) {
+    trace?.call(
+      'Setter helper',
+      'The page has no identifiable puzzle article.',
+      page,
+    );
+    return null;
+  }
+  final ids = article
+      .querySelectorAll('a[href]')
+      .map((a) => _link(page, a))
+      .nonNulls
+      .where(
+        (uri) =>
+            const {
+              'logic-masters.de',
+              'www.logic-masters.de',
+            }.contains(uri.host) &&
+            uri.path == '/Raetselportal/Raetsel/zeigen.php',
+      )
+      .map((uri) => uri.queryParameters['id'])
+      .nonNulls
+      .toSet();
+  final title = _identityText(_string(article.querySelector('h1')));
+  if (ids.isNotEmpty
+      ? ids.length != 1 || !ids.contains(entry.id)
+      : title.isEmpty || title != _identityText(entry.title)) {
+    trace?.call(
+      'Setter helper',
+      'The article does not identify this Logic Masters edition.',
+      page,
+    );
+    return null;
+  }
+  final links = _rankPlayerLinks(
+    article,
+    page,
+    entry.title,
+    trace,
+  ).where((uri) => !isLibrarySetterLanding(uri)).toList();
+  if (links.length != 1) {
+    trace?.call(
+      'Setter helper',
+      'Found ${links.length} distinct player destinations on the article. A unique share is required.',
+      page,
+    );
+    return null;
+  }
+  trace?.call(
+    'Setter helper',
+    'Identified the authored puzzle article and its player destination.',
+    links.single,
+  );
+  return links.single;
+}
+
+// Many authors use bare text, line breaks and links directly in .rp_html.
+// The parent text in those posts includes every rule, example and older puzzle.
+// Use the nearby caption, stopping at other links and unrelated content.
+String _captionBefore(Element element, Element body, {bool diagram = false}) {
+  var current = element;
+  while (current != body && current.parent != null) {
+    final parent = current.parent!;
+    final siblings = parent.nodes;
+    for (var i = siblings.indexOf(current) - 1; i >= 0; i--) {
+      final node = siblings[i];
+      if (node is Element) {
+        if (node.localName == 'br') {
+          if (diagram) continue;
+          return '';
+        }
+        if (node.localName == 'a' || node.querySelector('a, img') != null) {
+          return '';
+        }
+        // A list of rules ending ahead of a link is not its caption.
+        if (const {'ol', 'ul', 'table'}.contains(node.localName)) return '';
+      }
+      final content = (node.text ?? '').trim();
+      if (content.isNotEmpty) {
+        return content.length > 280
+            ? content.substring(content.length - 280)
+            : content;
+      }
+    }
+    // Only cross formatting wrappers. For diagrams a centered wrapper is
+    // commonly preceded by a separate caption outside that wrapper.
+    if (!diagram &&
+        const {'p', 'div', 'li', 'td', 'figure'}.contains(parent.localName)) {
+      return '';
+    }
+    current = parent;
+  }
+  return '';
+}
+
+final _otherPuzzle = RegExp(
+  r'\b(example|examples|beispiel|tutorial|walkthrough|solution|lösung|previous|earlier|vorherige[snmr]?|frühere[snmr]?|another puzzle|last puzzle|older puzzle|random puzzle|other puzzles|more puzzles)\b',
+  caseSensitive: false,
+);
+final _playLabel = RegExp(
+  r'\b(play|solve|start|sudoku ?pad|f puzzles?|ctc(?: app)?|spielen|lösen|online)\b',
+  caseSensitive: false,
+);
+
+String _anchorLabel(Element anchor) {
+  final image = anchor.querySelector('img');
+  return [
+    _string(anchor),
+    ?anchor.attributes['title'],
+    ?anchor.attributes['aria-label'],
+    ?image?.attributes['alt'],
+    ?image?.attributes['title'],
+  ].join(' ').trim();
+}
+
 List<Uri> _rankPlayerLinks(
   Element body,
   Uri base,
   String title,
-  String author,
+  LibraryTrace? trace,
 ) {
   final normalizedTitle = _identityText(title);
-  final normalizedAuthor = _identityText(author);
   final ranked = <(int, int, Uri)>[];
+  var otherLinks = 0;
   for (final (order, anchor) in body.querySelectorAll('a[href]').indexed) {
     final target = _link(base, anchor);
-    if (target == null || !isLibraryPayloadLink(target)) continue;
-    final label = _identityText(_string(anchor));
-    final context = _identityText(_string(anchor.parent));
-    var score = 0;
-    if (RegExp(r'\b(play|solve|sudoku ?pad|f puzzles?)\b').hasMatch(label)) {
-      score += 30;
+    if (target == null || !isLibraryPayloadLink(target)) {
+      otherLinks++;
+      continue;
     }
-    if (normalizedTitle.isNotEmpty &&
-        (label.contains(normalizedTitle) ||
-            context.contains(normalizedTitle))) {
-      score += 100;
+    final image = anchor.querySelector('img') != null;
+    final label = _identityText(_anchorLabel(anchor));
+    final before = _captionBefore(anchor, body).toLowerCase();
+    final matchesTitle =
+        normalizedTitle.isNotEmpty && label.contains(normalizedTitle);
+    if (!matchesTitle &&
+        (_otherPuzzle.hasMatch(label) || _otherPuzzle.hasMatch(before))) {
+      trace?.call(
+        'Setter page',
+        'Skipped a link marked as an example, solution or another puzzle.',
+        target,
+      );
+      continue;
     }
-    if (normalizedAuthor.isNotEmpty && context.contains(normalizedAuthor)) {
-      score += 5; // corroboration only; shared authors are not identity.
-    }
-    if (RegExp(
-      r'\b(previous|earlier|last|another|example|series|index|inspired|sequel)\b',
-    ).hasMatch(context)) {
-      // An earlier puzzle or an example may also be a valid, untitled grid.
-      // It cannot act as an alternate for this entry merely by decoding.
-      if (normalizedTitle.isNotEmpty &&
-          !label.contains(normalizedTitle) &&
-          !RegExp(r'\b(play|solve|sudoku ?pad|f puzzles?)\b').hasMatch(label)) {
-        continue;
-      }
-      score -= 80;
-    }
-    if (anchor.querySelector('img') != null) score += 10;
+    var score = matchesTitle ? 100 : 0;
+    if (_playLabel.hasMatch(label)) score += 30;
+    if (_playLabel.hasMatch(before)) score += 5;
+    if (image) score += 10;
+    // A same-puzzle intermediate is a fallback after the direct share.
+    if (isLibrarySetterLanding(target)) score -= 45;
     ranked.add((score, order, target));
   }
   ranked.sort((a, b) {
     final evidence = b.$1.compareTo(a.$1);
     return evidence == 0 ? a.$2.compareTo(b.$2) : evidence;
   });
-  final seen = <String>{};
-  return [
-    for (final item in ranked)
-      if (seen.add(item.$3.toString())) item.$3,
-  ];
+  if (otherLinks > 0) {
+    trace?.call(
+      'Setter page',
+      'Skipped $otherLinks links outside supported puzzle sources.',
+      base,
+    );
+  }
+  return ranked.map((item) => item.$3).toSet().toList();
+}
+
+Uri? _selectPuzzleDiagram(
+  Element body,
+  Uri base,
+  List<Uri> candidates,
+  LibraryTrace? trace,
+) {
+  Uri? best;
+  var bestScore = -1;
+  for (final image in body.querySelectorAll('img[src]')) {
+    final source = _link(base, image, 'src');
+    var anchor = image.parent;
+    while (anchor != null && anchor != body && anchor.localName != 'a') {
+      anchor = anchor.parent;
+    }
+    if (anchor == body) anchor = null;
+    final target = anchor == null ? null : _link(base, anchor);
+    final fullImage = target != null && isLibraryDiagramLink(target);
+    final candidate = fullImage ? target : source;
+    if (candidate == null || !isLibraryDiagramLink(candidate)) continue;
+    final linkedToBoard = target != null && candidates.contains(target);
+    final label = anchor == null
+        ? [
+            image.attributes['alt'],
+            image.attributes['title'],
+          ].nonNulls.join(' ')
+        : _anchorLabel(anchor);
+    if ((anchor != null && !fullImage && !linkedToBoard) ||
+        _otherPuzzle.hasMatch(label) ||
+        (!linkedToBoard &&
+            _otherPuzzle.hasMatch(
+              _captionBefore(anchor ?? image, body, diagram: true),
+            ))) {
+      trace?.call(
+        'Setter page',
+        'Skipped an illustration or a picture linked to another destination.',
+        candidate,
+      );
+      continue;
+    }
+    var score = 0;
+    if (fullImage) score = 1;
+    if (linkedToBoard) score = target == candidates.firstOrNull ? 3 : 2;
+    if (score > bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+  return best;
 }
 
 String _identityText(String value) => value
@@ -470,6 +695,8 @@ String _identityText(String value) => value
 
 bool isLibraryDiagramLink(Uri uri) =>
     uri.scheme == 'https' &&
+    uri.userInfo.isEmpty &&
+    !uri.hasPort &&
     (((uri.host == 'logic-masters.de' || uri.host == 'www.logic-masters.de') &&
             uri.path.startsWith('/Dateien/')) ||
         ((uri.host == 'sudokupad.app' ||

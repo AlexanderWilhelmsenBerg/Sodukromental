@@ -11,6 +11,61 @@ import 'package:sodukromental/library_source.dart';
 
 void main() {
   testWidgets(
+    'a saved diagram opens its worksheet when its package is unsupported',
+    (tester) async {
+      const entry = LibraryEntry(
+        id: '000T6J',
+        title: 'Linked grids',
+        author: 'Author',
+      );
+      final diagram = File('test/fixtures/00036W.png').readAsBytesSync();
+      final store = await LibraryStore.open(
+        executor: NativeDatabase.memory(),
+        records: [entry],
+        includeAuthored: false,
+        decodeImage: (image) async => image.length == diagram.length,
+        fetch: (uri) async {
+          if (uri.path == '/Dateien/bild.php') {
+            return LibraryResponse(200, diagram);
+          }
+          expect(uri.path, endsWith('zeigen.php'));
+          const detail = '''
+          <div class="rp_titel"><h2>Linked grids</h2></div>
+          <div class="rp_html">
+            <p><a href="https://sudokupad.app/scfopaque-package">Play Linked grids</a></p>
+            <img src="/Dateien/bild.php?data=99446e8e-5915-343133362d31">
+          </div>
+        ''';
+          return LibraryResponse(200, Uint8List.fromList(utf8.encode(detail)));
+        },
+      );
+      addTearDown(store.close);
+      await tester.runAsync(() async {
+        await store.requestDownload(entry.id);
+        await store.resumeDownloads();
+      });
+      final saved = store.download(entry.id)!;
+      expect(saved.availability, LibraryAvailability.view);
+      expect(saved.supportReasons.single, contains('not yet supported'));
+
+      await tester.pumpWidget(
+        MaterialApp(home: LibraryScreen(store: store, startSync: false)),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ListTile, entry.title));
+      await tester.pumpAndSettle();
+      expect(find.text(saved.supportReasons.single), findsOneWidget);
+      expect(find.text('Play puzzle'), findsNothing);
+      final worksheet = find.text('Solve on diagram');
+      await tester.ensureVisible(worksheet);
+      await tester.tap(worksheet);
+      await tester.pumpAndSettle();
+      expect(find.byType(LibraryDiagramSheet), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
     '00036W image-only puzzle opens and resumes its manual worksheet offline',
     (tester) async {
       tester.view.devicePixelRatio = 1;

@@ -4,6 +4,18 @@
 
 ## Android debug handoff
 
+### 0.2.2 · Setter pages and the event log
+
+In **Sudoku**, search for `000VJJ`, Prof.Dori’s *The Greatest Fog*. Its setter post links **Click here to start the puzzle** directly to SudokuPad. The 0.2.1 importer fetched that package, then rejected its compact fog coordinates. The native player now reads those coordinates, including multiple reveal effects from one cell. An existing save that retained the package can upgrade on the device. For a picture-only save, tap **Check for playable puzzle** while connected. Open **Play puzzle** and turn on airplane mode to continue. [Setter’s post](https://logic-masters.de/Raetselportal/Raetsel/zeigen.php?chlang=en&id=000VJJ)
+
+*Roundabout* (`000VLD`) exercises an earlier step. Its setter labels the play link **CTC-App** and discusses examples elsewhere in the article. The helper now reads the caption next to each link and considers clickable puzzle images. It also distinguishes a puzzle diagram from an example or solution image. If a downloaded format still needs native support, an available puzzle diagram can be opened as a manually checked worksheet. [Roundabout](https://logic-masters.de/Raetselportal/Raetsel/zeigen.php?chlang=en&id=000VLD)
+
+For supported setter-hosted puzzle pages, the helper checks that the article identifies the requested edition and points to one player destination. GiAnMMV’s *Bent Arrow* (`000W5I`) was tested through the setter’s own article and its SudokuPad API response, whose compressed puzzle contains URL escapes. Both that article and the clickable board on Logic Masters lead to the same native 4×4. [Setter’s article](https://gianmmv.github.io/puzzles/bent-arrow/) · [Logic Masters post](https://logic-masters.de/Raetselportal/Raetsel/zeigen.php?chlang=en&id=000W5I)
+
+To report another failure, open **Puzzle event log** on the puzzle’s details screen after attempting the download. Use **Copy log for a report** to copy the trace for that puzzle. **Library event log** on the Sudoku screen shows recent events across the Library, including catalog errors. The device keeps the latest 400 events across restarts. Reports include the puzzle ID, timestamp, source route, HTTP status, link-selection and import decisions, and download outcome. Embedded puzzle payloads and URL credentials are omitted.
+
+### 0.2.1 · Initial recovery and worksheets
+
 Download the artifact ZIP and extract `sodukromental-0.2.1-debug-android.apk`. If you play the published 0.2.0 preview, export your saves before uninstalling it. The two builds have different Android signing certificates. [Debug APK artifact](https://github.com/AlexanderWilhelmsenBerg/Sodukromental/actions/runs/45998927694/artifacts/15197927532) · [Save-transfer instructions](android-debug-save-transfer.md)
 
 1. Search for **Classic 21.07** or **HI (Arrows edition)** in **Sudoku**. Tap **Save offline**, or **Check for playable puzzle** on a previously saved reference. Open **Play puzzle**, make a mark, switch to airplane mode and resume. Both live shares resolved to native 9×9 boards in the handoff check.
