@@ -270,6 +270,15 @@ void main() {
       '3',
     );
 
+    // Return to a saved guess with no selection and immediately replace it.
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LibraryPlayer(store: store, puzzle: puzzle),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('cell-1')));
     await tester.ensureVisible(find.widgetWithText(FilledButton, '7'));
     await tester.tap(find.widgetWithText(FilledButton, '7'));
     await tester.pump(const Duration(milliseconds: 250));
@@ -291,7 +300,7 @@ void main() {
   testWidgets('ordinary keypad is 3 by 3 and visible counts never leak fog', (
     tester,
   ) async {
-    tester.view.physicalSize = const Size(540, 1000);
+    tester.view.physicalSize = const Size(320, 1000);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
@@ -355,6 +364,21 @@ void main() {
     expect(
       tester.widget<Text>(find.byKey(const ValueKey('symbol-count-7'))).data,
       '2 visible',
+    );
+    final same = find.byKey(const ValueKey('cell-0'));
+    await tester.ensureVisible(same);
+    await tester.pump();
+    await tester.tap(same);
+    await tester.pump(const Duration(milliseconds: 60));
+    await tester.tap(same);
+    await tester.pump();
+    expect(tester.widget<Semantics>(same).properties.selected, isTrue);
+    expect(
+      tester
+          .widget<Semantics>(find.byKey(const ValueKey('cell-10')))
+          .properties
+          .selected,
+      isTrue,
     );
   });
 }

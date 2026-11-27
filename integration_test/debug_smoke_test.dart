@@ -190,9 +190,11 @@ void main() {
     Future<void> enter(String value) async {
       final cell = find.byKey(ValueKey('cell-$index'));
       await tester.ensureVisible(cell);
+      await tester.pump();
       await tester.tap(cell);
       await tester.pump();
-      final key = find.widgetWithText(FilledButton, value);
+      expect(tester.widget<Semantics>(cell).properties.selected, isTrue);
+      final key = find.byKey(ValueKey('library-key-$value'));
       await tester.ensureVisible(key.first);
       await tester.pump(const Duration(milliseconds: 200));
       await tester.tap(key.first);

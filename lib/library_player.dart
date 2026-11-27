@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart' show kDoubleTapTimeout;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
@@ -809,6 +810,38 @@ class _NativeLibraryBoard extends StatefulWidget {
 
 class _NativeLibraryBoardState extends State<_NativeLibraryBoard> {
   final _stroke = <LibraryStrokePoint>[];
+  Timer? _tapWindow;
+  (int, String, int)? _lastValueTap;
+
+  void _tapCell(int cell) {
+    final controller = widget.controller;
+    final value = controller.displayedValue(cell);
+    final tapped = value == null ? null : (cell, value, controller.cursor);
+    final match =
+        tapped != null &&
+        tapped == _lastValueTap &&
+        controller.selection.contains(cell);
+    _tapWindow?.cancel();
+    _lastValueTap = null;
+    if (match) {
+      controller.selectMatching(value!);
+      return;
+    }
+    // Apply the first tap immediately so a quick keypad press can replace a
+    // filled cell. A second tap on the same unchanged value expands selection.
+    controller.select(cell, extend: controller.addSelection);
+    if (tapped != null) {
+      _lastValueTap = tapped;
+      _tapWindow = Timer(kDoubleTapTimeout, () => _lastValueTap = null);
+    }
+  }
+
+  @override
+  void dispose() {
+    _tapWindow?.cancel();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = widget.controller, d = c.definition;
@@ -909,7 +942,7 @@ class _NativeLibraryBoardState extends State<_NativeLibraryBoard> {
                   top: origin + cell ~/ d.width * step,
                   width: step,
                   height: step,
-                  child: _Cell(controller: c, cell: cell),
+                  child: _Cell(controller: c, cell: cell, onTap: _tapCell),
                 ),
               IgnorePointer(
                 child: CustomPaint(
@@ -966,9 +999,14 @@ class _NativeLibraryBoardState extends State<_NativeLibraryBoard> {
 }
 
 class _Cell extends StatelessWidget {
-  const _Cell({required this.controller, required this.cell});
+  const _Cell({
+    required this.controller,
+    required this.cell,
+    required this.onTap,
+  });
   final LibraryPlayerController controller;
   final int cell;
+  final ValueChanged<int> onTap;
   @override
   Widget build(BuildContext context) {
     final value = controller.displayedValue(cell),
@@ -992,11 +1030,8 @@ class _Cell extends StatelessWidget {
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
           excludeFromSemantics: true,
-          onTap: () => controller.select(cell, extend: controller.addSelection),
+          onTap: () => onTap(cell),
           onLongPress: () => controller.select(cell, toggle: true),
-          onDoubleTap: value == null
-              ? null
-              : () => controller.selectMatching(value),
           child: Stack(
             children: [
               if (controller.position.colors[cell]?.isNotEmpty == true)
