@@ -1,6 +1,18 @@
 # Phase 2 Android debug handoff
 
-**0.2.0, build 3** is the Android playtest build of the colony and native Library expansion. Install the debug APK from the Build APK run for this revision. The artifact includes the APK, its SHA-256 checksum, signing information, source revision and Android launch screenshot. A compatible Phase 1 debug installation can be upgraded in place with `adb install -r sodukromental-0.2.0-debug-android.apk`. Compare the signing receipt with your installed preview before replacing a save you value. [Build APK runs](https://github.com/AlexanderWilhelmsenBerg/Sodukromental/actions/workflows/build-apk.yml)
+**0.2.0, build 3** is ready for playtesting on Android 7.0 and newer. Download the artifact while signed in to GitHub, extract the ZIP and open `sodukromental-0.2.0-debug-android.apk` on your phone. The ZIP also contains the checksum, signing receipt, source revision and Android launch screenshot. [Download the verified build](https://github.com/AlexanderWilhelmsenBerg/Sodukromental/actions/runs/45982280414/artifacts/15190039691)
+
+**Returning from the published 0.1.0 preview? Export your saves before removing it.** Android requires matching certificates for an in-place update, and the two published debug builds have different signatures. The transfer guide covers both the colony and the Library, including saved puzzle packages and notes. [Transfer a debug save](android-debug-save-transfer.md)
+
+On a disposable Android 14 emulator, the transfer recovered a Phase 1 campaign, its settings and an in-progress *X-Sums* puzzle into this signed APK. The source database held a pencilled 1, which was also present in the restored Library. The helper checks both databases before replacing them and keeps a separate backup of the destination.
+
+| Build receipt | Verified value |
+| --- | --- |
+| APK SHA-256 | `2bb2abc180ef8569ffbec44301b7e8dd486982147cf113b416212eb0271b003a` |
+| Debug signer SHA-256 | `9ee6aee25335bf4f7d941e710d454ed2ce28db3569ca58933f0e01cf94926fb8` |
+| Package and source | `org.sodukromental.debug` · [8a245bc](https://github.com/AlexanderWilhelmsenBerg/Sodukromental/commit/8a245bc7fe5105ecc08ff3b4b43ce5a421237295) |
+
+All 121 regression tests passed. Android 14 exercised the opening through a designed hatch, a wrong fog entry that survived a database reopen and could immediately be corrected, and the companion’s permission and roaming controls. The packaging job installed the exact APK on Android 14 and verified a same-signer test upgrade retained two printed 4s, 2 DNA, the colony seed and a Library pencil mark. Windows, Linux and the iOS simulator compiled from the same source. [Android tests](https://github.com/AlexanderWilhelmsenBerg/Sodukromental/actions/runs/45982247134) · [APK installation and upgrade](https://github.com/AlexanderWilhelmsenBerg/Sodukromental/actions/runs/45982280414) · [Desktop and iOS builds](https://github.com/AlexanderWilhelmsenBerg/Sodukromental/actions/runs/45982280443)
 
 | Slice | Try this in the debug build |
 | --- | --- |
