@@ -111,8 +111,9 @@ void main() {
       for (final index in next.indices.where((i) => next.givens[i] == 0)) {
         final digit = next.solution[index];
         await tap(cell(index));
-        final stock = find.bySemanticsLabel(
-          RegExp('^Digit $digit, [1-9][0-9]* available'),
+        final inStock = RegExp('^Digit $digit, [1-9][0-9]* available');
+        final stock = find.byWidgetPredicate(
+          (w) => w is Semantics && inStock.hasMatch(w.properties.label ?? ''),
         );
         final offered = find.text('Take $digit');
         final clock = Stopwatch()..start();
