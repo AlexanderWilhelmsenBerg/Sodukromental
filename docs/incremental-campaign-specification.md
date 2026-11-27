@@ -49,6 +49,8 @@ After encounter 13, the player can start building the Meeting Hall from **two ro
 
 ## Endgame
 
+The [Phase 2 midgame and prestige specification](phase-2-midgame-and-prestige.md) describes the expedition payoffs, what a player can pursue on a return run, and the checks for the next debug handoff.
+
 Keep the completed colony active until the player chooses to prestige. Players can finish the remaining routes, replay learned variants for practice, or take on expeditions that combine rules from different lessons. An expedition opens after its rules have been learned and the Meeting Hall is complete. Each uses a new authored board with its own clue layout.
 
 | Expedition | Puzzle focus | Colony activity |
