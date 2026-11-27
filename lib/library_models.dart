@@ -1,8 +1,8 @@
 import 'boards.dart';
 
 enum LibraryAvailability {
-  original('Open original'),
-  view('View offline'),
+  original('Connect to download'),
+  view('View saved diagram'),
   play('Play offline');
 
   const LibraryAvailability(this.label);
@@ -342,6 +342,173 @@ class LibraryEntry {
       fromJson({...toJson(), ...values});
 }
 
+class LibraryFogTrigger {
+  const LibraryFogTrigger({
+    required this.requires,
+    required this.reveals,
+    this.requiresLit = false,
+    this.reversible = true,
+  });
+  final Map<int, String> requires;
+  final Set<int> reveals;
+  final bool requiresLit;
+  final bool reversible;
+  Map<String, dynamic> toJson() => {
+    'requires': requires.map((cell, value) => MapEntry('$cell', value)),
+    'reveals': reveals.toList(),
+    'requiresLit': requiresLit,
+    'reversible': reversible,
+  };
+  static LibraryFogTrigger fromJson(Map json) => LibraryFogTrigger(
+    requires: (json['requires'] as Map).map(
+      (cell, value) => MapEntry(int.parse('$cell'), '$value'),
+    ),
+    reveals: (json['reveals'] as List).cast<int>().toSet(),
+    requiresLit: json['requiresLit'] as bool? ?? false,
+    reversible: json['reversible'] as bool? ?? true,
+  );
+}
+
+/// Versioned, source-neutral puzzle data consumed by the native Library player.
+/// Nullable givens/solution entries distinguish unfinished cells from authored
+/// deliberate blanks; [playable] distinguishes holes in irregular grids.
+class LibraryPuzzleDefinition {
+  const LibraryPuzzleDefinition({
+    this.version = 1,
+    required this.width,
+    required this.height,
+    required this.symbols,
+    required this.playable,
+    required this.givens,
+    required this.regions,
+    this.solution = const [],
+    this.deliberateBlanks = const {},
+    this.initiallyVisible,
+    this.fogTriggers = const [],
+    this.layers = const [],
+    this.presentation = const {},
+    this.assets = const [],
+    this.allowRowRepeats = false,
+    this.allowColumnRepeats = false,
+    this.allowRegionRepeats = false,
+  });
+  final int version;
+  final int width;
+  final int height;
+  final List<String> symbols;
+  final Set<int> playable;
+  final List<String?> givens;
+  final List<int?> regions;
+  final List<String?> solution;
+  final Set<int> deliberateBlanks;
+  final Set<int>? initiallyVisible;
+  final List<LibraryFogTrigger> fogTriggers;
+  final List<Map<String, dynamic>> layers;
+  final Map<String, dynamic> presentation;
+  final List<Map<String, dynamic>> assets;
+  final bool allowRowRepeats;
+  final bool allowColumnRepeats;
+  final bool allowRegionRepeats;
+  int get cellCount => width * height;
+  bool get hasFog => initiallyVisible != null;
+
+  Map<String, dynamic> toJson() => {
+    'version': version,
+    'width': width,
+    'height': height,
+    'symbols': symbols,
+    'playable': playable.toList(),
+    'givens': givens,
+    'regions': regions,
+    'solution': solution,
+    'deliberateBlanks': deliberateBlanks.toList(),
+    'initiallyVisible': initiallyVisible?.toList(),
+    'fogTriggers': fogTriggers.map((trigger) => trigger.toJson()).toList(),
+    'layers': layers,
+    'presentation': presentation,
+    'assets': assets,
+    'allowRowRepeats': allowRowRepeats,
+    'allowColumnRepeats': allowColumnRepeats,
+    'allowRegionRepeats': allowRegionRepeats,
+  };
+  static LibraryPuzzleDefinition fromJson(Map json) => LibraryPuzzleDefinition(
+    version: json['version'] as int? ?? 1,
+    width: json['width'] as int,
+    height: json['height'] as int,
+    symbols: (json['symbols'] as List).map((value) => '$value').toList(),
+    playable: (json['playable'] as List).cast<int>().toSet(),
+    givens: (json['givens'] as List).map((value) => value?.toString()).toList(),
+    regions: (json['regions'] as List).map((value) => value as int?).toList(),
+    solution: (json['solution'] as List? ?? const [])
+        .map((value) => value?.toString())
+        .toList(),
+    deliberateBlanks: (json['deliberateBlanks'] as List? ?? const [])
+        .cast<int>()
+        .toSet(),
+    initiallyVisible: json['initiallyVisible'] == null
+        ? null
+        : (json['initiallyVisible'] as List).cast<int>().toSet(),
+    fogTriggers: (json['fogTriggers'] as List? ?? const [])
+        .map((item) => LibraryFogTrigger.fromJson(item as Map))
+        .toList(),
+    layers: (json['layers'] as List? ?? const [])
+        .map((item) => (item as Map).cast<String, dynamic>())
+        .toList(),
+    presentation: (json['presentation'] as Map? ?? const {})
+        .cast<String, dynamic>(),
+    assets: (json['assets'] as List? ?? const [])
+        .map((item) => (item as Map).cast<String, dynamic>())
+        .toList(),
+    allowRowRepeats: json['allowRowRepeats'] as bool? ?? false,
+    allowColumnRepeats: json['allowColumnRepeats'] as bool? ?? false,
+    allowRegionRepeats: json['allowRegionRepeats'] as bool? ?? false,
+  );
+
+  factory LibraryPuzzleDefinition.fromBoard(
+    BoardSpec board, {
+    List<Map<String, dynamic>> layers = const [],
+  }) {
+    final symbols = [
+      for (var value = 1; value <= board.size; value++) '$value',
+    ];
+    return LibraryPuzzleDefinition(
+      width: board.size,
+      height: board.size,
+      symbols: symbols,
+      playable: board.indices.toSet(),
+      givens: board.givens
+          .map((value) => value == 0 ? null : '$value')
+          .toList(),
+      regions: board.regions.cast<int?>(),
+      solution: board.solution
+          .map((value) => value == 0 ? null : '$value')
+          .toList(),
+      initiallyVisible: board.fog == FogKind.none
+          ? null
+          : board.starterPatch.toSet(),
+      fogTriggers: [
+        if (board.fog == FogKind.halo)
+          for (final cell in board.indices.where(
+            (cell) => board.givens[cell] == 0,
+          ))
+            LibraryFogTrigger(
+              requires: {cell: '${board.solution[cell]}'},
+              reveals: board.adjacent(cell).toSet(),
+            ),
+        for (final reveal in board.reveals)
+          LibraryFogTrigger(
+            requires: {
+              for (final cell in reveal.requires)
+                cell: '${board.solution[cell]}',
+            },
+            reveals: reveal.patch.toSet(),
+          ),
+      ],
+      layers: layers,
+    );
+  }
+}
+
 class LibraryDownload {
   const LibraryDownload(
     this.entry, {
@@ -350,6 +517,10 @@ class LibraryDownload {
     this.diagram,
     this.manual = false,
     this.finalCheck = false,
+    this.definition,
+    this.provenance = const {},
+    this.supportReasons = const [],
+    this.assetManifest = const [],
   });
 
   // Keep attribution and rules tied to the revision the player downloaded.
@@ -359,7 +530,17 @@ class LibraryDownload {
   final String? diagram;
   final bool manual;
   final bool finalCheck;
-  LibraryAvailability get availability => board != null
+  final LibraryPuzzleDefinition? definition;
+  final Map<String, dynamic> provenance;
+  final List<String> supportReasons;
+  final List<Map<String, dynamic>> assetManifest;
+  LibraryPuzzleDefinition? get nativeDefinition =>
+      definition ??
+      (board == null
+          ? null
+          : LibraryPuzzleDefinition.fromBoard(board!, layers: refs));
+  LibraryAvailability get availability =>
+      (definition != null ? supportReasons.isEmpty : board != null)
       ? LibraryAvailability.play
       : diagram != null
       ? LibraryAvailability.view
@@ -371,6 +552,10 @@ class LibraryDownload {
     'finalCheck': finalCheck,
     'diagram': diagram,
     'refs': refs,
+    if (definition != null) 'definition': definition!.toJson(),
+    'provenance': provenance,
+    'supportReasons': supportReasons,
+    'assetManifest': assetManifest,
     if (board case final board?)
       'board': {
         'size': board.size,
@@ -401,6 +586,16 @@ class LibraryDownload {
       diagram: json['diagram'] as String?,
       refs: (json['refs'] as List? ?? [])
           .map((ref) => (ref as Map).cast<String, dynamic>())
+          .toList(),
+      definition: json['definition'] == null
+          ? null
+          : LibraryPuzzleDefinition.fromJson(json['definition'] as Map),
+      provenance: (json['provenance'] as Map? ?? const {})
+          .cast<String, dynamic>(),
+      supportReasons: (json['supportReasons'] as List? ?? const [])
+          .cast<String>(),
+      assetManifest: (json['assetManifest'] as List? ?? const [])
+          .map((item) => (item as Map).cast<String, dynamic>())
           .toList(),
       board: board == null
           ? null
@@ -456,38 +651,165 @@ class LibraryJob {
   );
 }
 
+enum LibraryInputMode { value, corner, center, color, letter, pen, freehand }
+
+class LibraryStrokePoint {
+  const LibraryStrokePoint(this.x, this.y);
+  final double x;
+  final double y;
+  Map<String, dynamic> toJson() => {'x': x, 'y': y};
+  static LibraryStrokePoint fromJson(Map json) => LibraryStrokePoint(
+    (json['x'] as num).toDouble(),
+    (json['y'] as num).toDouble(),
+  );
+}
+
+class LibraryStroke {
+  const LibraryStroke({
+    required this.points,
+    required this.color,
+    this.snapped = false,
+    this.edge = false,
+  });
+  final List<LibraryStrokePoint> points;
+  final String color;
+  final bool snapped;
+  final bool edge;
+  Map<String, dynamic> toJson() => {
+    'points': points.map((point) => point.toJson()).toList(),
+    'color': color,
+    'snapped': snapped,
+    'edge': edge,
+  };
+  static LibraryStroke fromJson(Map json) => LibraryStroke(
+    points: (json['points'] as List)
+        .map((point) => LibraryStrokePoint.fromJson(point as Map))
+        .toList(),
+    color: json['color'] as String? ?? 'amber',
+    snapped: json['snapped'] as bool? ?? false,
+    edge: json['edge'] as bool? ?? false,
+  );
+}
+
+/// One immutable point in a Library attempt's replay history.
 class LibraryPosition {
-  const LibraryPosition(this.digits, this.notes);
+  const LibraryPosition(
+    this.digits,
+    this.notes, {
+    this.values = const [],
+    this.cornerMarks = const {},
+    this.centerMarks = const {},
+    this.letterNotes = const {},
+    this.colors = const {},
+    this.pen = const [],
+    this.freehand = const [],
+    this.revealed = const {},
+    this.grantedFogTriggers = const {},
+    this.atMilliseconds = 0,
+  });
   final List<int> digits;
   final Map<int, Set<int>> notes;
+  final List<String?> values;
+  final Map<int, Set<String>> cornerMarks;
+  final Map<int, Set<String>> centerMarks;
+  final Map<int, Set<String>> letterNotes;
+  final Map<int, Set<String>> colors;
+  final List<LibraryStroke> pen;
+  final List<LibraryStroke> freehand;
+  final Set<int> revealed;
+  final Set<String> grantedFogTriggers;
+  final int atMilliseconds;
 
   Map<String, dynamic> toJson() => {
     'digits': digits,
     'notes': notes.map((cell, values) => MapEntry('$cell', values.toList())),
+    if (values.isNotEmpty) 'values': values,
+    'cornerMarks': _stringMap(cornerMarks),
+    'centerMarks': _stringMap(centerMarks),
+    'letterNotes': _stringMap(letterNotes),
+    'colors': _stringMap(colors),
+    'pen': pen.map((stroke) => stroke.toJson()).toList(),
+    'freehand': freehand.map((stroke) => stroke.toJson()).toList(),
+    'revealed': revealed.toList(),
+    'grantedFogTriggers': grantedFogTriggers.toList(),
+    'atMilliseconds': atMilliseconds,
   };
-  static LibraryPosition fromJson(Map json) => LibraryPosition(
-    (json['digits'] as List).cast<int>(),
-    (json['notes'] as Map).map(
+  static Map<String, dynamic> _stringMap(Map<int, Set<String>> source) =>
+      source.map((cell, values) => MapEntry('$cell', values.toList()));
+  static Map<int, Set<String>> _readStringMap(dynamic source) =>
+      (source as Map? ?? const {}).map(
+        (cell, values) => MapEntry(
+          int.parse(cell as String),
+          (values as List).map((value) => '$value').toSet(),
+        ),
+      );
+  static LibraryPosition fromJson(Map json) {
+    final legacy = (json['notes'] as Map? ?? const {}).map(
       (cell, values) => MapEntry(
         int.parse(cell as String),
         (values as List).cast<int>().toSet(),
       ),
-    ),
-  );
+    );
+    final corners = _readStringMap(json['cornerMarks']);
+    if (corners.isEmpty) {
+      for (final entry in legacy.entries) {
+        corners[entry.key] = entry.value.map((value) => '$value').toSet();
+      }
+    }
+    return LibraryPosition(
+      (json['digits'] as List).cast<int>(),
+      legacy,
+      values: (json['values'] as List? ?? const [])
+          .map((value) => value?.toString())
+          .toList(),
+      cornerMarks: corners,
+      centerMarks: _readStringMap(json['centerMarks']),
+      letterNotes: _readStringMap(json['letterNotes']),
+      colors: _readStringMap(json['colors']),
+      pen: (json['pen'] as List? ?? const [])
+          .map((stroke) => LibraryStroke.fromJson(stroke as Map))
+          .toList(),
+      freehand: (json['freehand'] as List? ?? const [])
+          .map((stroke) => LibraryStroke.fromJson(stroke as Map))
+          .toList(),
+      revealed: (json['revealed'] as List? ?? const []).cast<int>().toSet(),
+      grantedFogTriggers: (json['grantedFogTriggers'] as List? ?? const [])
+          .cast<String>()
+          .toSet(),
+      atMilliseconds: json['atMilliseconds'] as int? ?? 0,
+    );
+  }
 }
 
 class LibrarySave {
-  const LibrarySave(this.history, this.index, this.lastPlayed, this.progress);
+  const LibrarySave(
+    this.history,
+    this.index,
+    this.lastPlayed,
+    this.progress, {
+    this.elapsedMilliseconds = 0,
+    this.paused = false,
+    this.checkMessage,
+    this.version = 2,
+  });
   final List<LibraryPosition> history;
   final int index;
   final DateTime lastPlayed;
   final LibraryProgress progress;
+  final int elapsedMilliseconds;
+  final bool paused;
+  final String? checkMessage;
+  final int version;
 
   Map<String, dynamic> toJson() => {
     'history': history.map((entry) => entry.toJson()).toList(),
     'index': index,
     'lastPlayed': lastPlayed.toIso8601String(),
     'progress': progress.name,
+    'elapsedMilliseconds': elapsedMilliseconds,
+    'paused': paused,
+    'checkMessage': checkMessage,
+    'version': version,
   };
   static LibrarySave fromJson(Map<String, dynamic> json) => LibrarySave(
     (json['history'] as List)
@@ -496,5 +818,9 @@ class LibrarySave {
     json['index'] as int,
     DateTime.parse(json['lastPlayed'] as String),
     LibraryProgress.values.byName(json['progress'] as String),
+    elapsedMilliseconds: json['elapsedMilliseconds'] as int? ?? 0,
+    paused: json['paused'] as bool? ?? false,
+    checkMessage: json['checkMessage'] as String?,
+    version: json['version'] as int? ?? 1,
   );
 }

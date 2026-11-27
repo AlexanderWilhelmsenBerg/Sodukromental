@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -8,8 +7,10 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'board_view.dart';
 import 'boards.dart';
+import 'creatures.dart';
 import 'library_artwork.dart';
 import 'library_models.dart';
+import 'library_player.dart';
 import 'library_store.dart';
 
 export 'library_models.dart';
@@ -24,6 +25,8 @@ class LibraryScreen extends StatefulWidget {
     this.onBack,
     this.startSync = true,
     this.active = true,
+    this.torchbearer,
+    this.reduceMotion = false,
   });
   final LibraryStore store;
   final bool Function(BoardSpec)? canColonyPlay;
@@ -31,6 +34,8 @@ class LibraryScreen extends StatefulWidget {
   final VoidCallback? onBack;
   final bool startSync;
   final bool active;
+  final ValueListenable<Creature?>? torchbearer;
+  final bool reduceMotion;
 
   @override
   State<LibraryScreen> createState() => _LibraryScreenState();
@@ -38,7 +43,8 @@ class LibraryScreen extends StatefulWidget {
 
 class _LibraryScreenState extends State<LibraryScreen> {
   var _search = '';
-  var _onlySaved = false;
+  late bool _onlySaved = widget.store.opensSavedShelf;
+  bool _started = false;
   final _selection = <String>{};
   var _selecting = false;
   LibrarySort _sort = LibrarySort.publication;
@@ -47,13 +53,40 @@ class _LibraryScreenState extends State<LibraryScreen> {
   @override
   void initState() {
     super.initState();
-    if (widget.startSync) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        unawaited(widget.store.synchronize(language: _language(context)));
-        unawaited(widget.store.resumeDownloads());
-      });
+    _activateShelf();
+  }
+
+  @override
+  void didUpdateWidget(covariant LibraryScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.store != widget.store) {
+      _onlySaved = widget.store.opensSavedShelf;
+      _started = false;
     }
+    _activateShelf();
+  }
+
+  bool get _syncInBackground => widget.store.automatic;
+  bool get _browseActive => widget.active && !_onlySaved;
+
+  void _activateShelf() {
+    if (_started || !widget.startSync || !(_browseActive || _syncInBackground))
+      return;
+    _started = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !(_browseActive || _syncInBackground)) {
+        _started = false;
+        return;
+      }
+      unawaited(widget.store.synchronize(language: _language(context)));
+      unawaited(widget.store.resumeDownloads());
+    });
+  }
+
+  void _shelf(bool saved) {
+    setState(() => _onlySaved = saved);
+    unawaited(widget.store.rememberShelf(saved));
+    _activateShelf();
   }
 
   @override
@@ -142,14 +175,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
                               ChoiceChip(
                                 label: const Text('Browse'),
                                 selected: !_onlySaved,
-                                onSelected: (_) =>
-                                    setState(() => _onlySaved = false),
+                                onSelected: (_) => _shelf(false),
                               ),
                               ChoiceChip(
                                 label: const Text('Saved'),
                                 selected: _onlySaved,
-                                onSelected: (_) =>
-                                    setState(() => _onlySaved = true),
+                                onSelected: (_) => _shelf(true),
                               ),
                               ActionChip(
                                 avatar: const Icon(Icons.filter_list),
@@ -292,6 +323,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                           store: store,
                                           canColonyPlay: widget.canColonyPlay,
                                           onColonyPlay: widget.onColonyPlay,
+                                          torchbearer: widget.torchbearer,
+                                          reduceMotion: widget.reduceMotion,
                                         ),
                                       ),
                                     );
@@ -622,11 +655,15 @@ class _LibraryDetails extends StatefulWidget {
     required this.store,
     this.canColonyPlay,
     this.onColonyPlay,
+    this.torchbearer,
+    this.reduceMotion = false,
   });
   final String id;
   final LibraryStore store;
   final bool Function(BoardSpec)? canColonyPlay;
   final void Function(BoardSpec)? onColonyPlay;
+  final ValueListenable<Creature?>? torchbearer;
+  final bool reduceMotion;
 
   @override
   State<_LibraryDetails> createState() => _LibraryDetailsState();
@@ -657,6 +694,7 @@ class _LibraryDetailsState extends State<_LibraryDetails> {
       final saved = widget.store.download(widget.id);
       final entry = saved?.entry ?? fresh;
       final board = saved?.board;
+      final native = saved?.nativeDefinition;
       final job = widget.store.jobs
           .where((job) => job.id == entry.id)
           .firstOrNull;
@@ -700,7 +738,7 @@ class _LibraryDetailsState extends State<_LibraryDetails> {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  if (board != null)
+                  if (native != null && saved!.supportReasons.isEmpty)
                     FilledButton.icon(
                       icon: const Icon(Icons.grid_on),
                       label: Text(
@@ -710,9 +748,11 @@ class _LibraryDetailsState extends State<_LibraryDetails> {
                       ),
                       onPressed: () => Navigator.of(context).push(
                         MaterialPageRoute<void>(
-                          builder: (_) => _LibraryPlayer(
+                          builder: (_) => LibraryPlayer(
                             store: widget.store,
-                            puzzle: saved!,
+                            puzzle: saved,
+                            torchbearer: widget.torchbearer,
+                            reduceMotion: widget.reduceMotion,
                           ),
                         ),
                       ),
@@ -765,7 +805,7 @@ class _LibraryDetailsState extends State<_LibraryDetails> {
                   if (!entry.authored)
                     OutlinedButton.icon(
                       icon: const Icon(Icons.open_in_new),
-                      label: const Text('Open original'),
+                      label: const Text('Read setter’s page'),
                       onPressed: () => _external(context, entry.portal),
                     ),
                 ],
@@ -801,8 +841,8 @@ class _LibraryDetailsState extends State<_LibraryDetails> {
                     label: Text(
                       video.available
                           ? (index == 0
-                                ? 'Watch solve on YouTube'
-                                : 'Watch another solve on YouTube')
+                                ? 'Watch CtC solve'
+                                : 'Watch another CtC solve')
                           : 'CtC solve unavailable',
                     ),
                     onPressed: video.available
@@ -943,361 +983,6 @@ class _DownloadQueue extends StatelessWidget {
       );
     },
   );
-}
-
-class _LibraryPlayer extends StatefulWidget {
-  const _LibraryPlayer({required this.store, required this.puzzle});
-  final LibraryStore store;
-  final LibraryDownload puzzle;
-
-  @override
-  State<_LibraryPlayer> createState() => _LibraryPlayerState();
-}
-
-class _LibraryPlayerState extends State<_LibraryPlayer> {
-  final _history = <LibraryPosition>[];
-  var _cursor = 0;
-  var _progress = LibraryProgress.unplayed;
-  int? _cell;
-  int? _digit;
-  var _notes = false;
-  Set<int> _conflicts = {};
-  BoardSpec get _board => widget.puzzle.board!;
-  LibraryPosition get _position => _history[_cursor];
-
-  @override
-  void initState() {
-    super.initState();
-    final entry = widget.puzzle.entry;
-    final save = widget.store.getSave(entry.id, entry.revision);
-    if (save == null || save.history.isEmpty) {
-      _history.add(LibraryPosition(List.of(_board.givens), {}));
-    } else {
-      _history.addAll(save.history);
-      _cursor = save.index.clamp(0, _history.length - 1);
-      _progress = save.progress;
-    }
-  }
-
-  Set<int>? get _visible {
-    if (_board.fog == FogKind.none) return null;
-    final visible = _board.starterPatch.toSet();
-    var expanded = true;
-    while (expanded) {
-      final count = visible.length;
-      if (_board.fog == FogKind.halo) {
-        final placed = visible
-            .where(
-              (index) =>
-                  _board.givens[index] == 0 &&
-                  _position.digits[index] == _board.solution[index],
-            )
-            .toList();
-        for (final index in placed) {
-          visible.addAll(_board.adjacent(index));
-        }
-      }
-      for (final reveal in _board.reveals) {
-        if (reveal.requires.every(
-          (index) =>
-              visible.contains(index) &&
-              _position.digits[index] == _board.solution[index],
-        )) {
-          visible.addAll(reveal.patch);
-        }
-      }
-      expanded = count != visible.length;
-    }
-    return visible;
-  }
-
-  void _write(int cell, int digit) {
-    if (_board.givens[cell] != 0 ||
-        (_visible?.contains(cell) == false) ||
-        (_board.fog != FogKind.none && _position.digits[cell] != 0))
-      return;
-    final digits = List<int>.of(_position.digits);
-    final notes = <int, Set<int>>{
-      for (final entry in _position.notes.entries) entry.key: {...entry.value},
-    };
-    if (_notes && digit != 0) {
-      if (digits[cell] != 0) return;
-      final marks = notes.putIfAbsent(cell, () => {});
-      if (!marks.add(digit)) marks.remove(digit);
-    } else {
-      if (digit != 0 &&
-          _board.fog != FogKind.none &&
-          digit != _board.solution[cell]) {
-        _feedback('The fog stays in place. Try another digit.');
-        return;
-      }
-      if (digits[cell] == digit && !notes.containsKey(cell)) return;
-      digits[cell] = digit;
-      notes.remove(cell);
-    }
-    setState(() {
-      _cell = cell;
-      _conflicts = {};
-      _progress = LibraryProgress.started;
-      _history.removeRange(_cursor + 1, _history.length);
-      _history.add(LibraryPosition(digits, notes));
-      _cursor++;
-      if (_history.length > 150) {
-        _history.removeAt(0);
-        _cursor--;
-      }
-    });
-    _persist();
-  }
-
-  void _select(int cell) {
-    setState(() => _cell = cell);
-    if (_digit case final digit?) _write(cell, digit);
-  }
-
-  Future<void> _chooseCell() async {
-    final visible = _visible;
-    final cells = _board.indices
-        .where(
-          (cell) =>
-              (visible?.contains(cell) ?? true) && _board.givens[cell] == 0,
-        )
-        .toList();
-    final cell = await showModalBottomSheet<int>(
-      context: context,
-      useSafeArea: true,
-      builder: (context) => ListView.builder(
-        itemCount: cells.length,
-        itemBuilder: (context, index) {
-          final cell = cells[index];
-          final value = _position.digits[cell];
-          return ListTile(
-            title: Text(
-              'Row ${cell ~/ _board.size + 1}, column ${cell % _board.size + 1}',
-            ),
-            subtitle: Text(value == 0 ? 'Empty' : 'Digit $value'),
-            selected: _cell == cell,
-            onTap: () => Navigator.pop(context, cell),
-          );
-        },
-      ),
-    );
-    if (mounted && cell != null) _select(cell);
-  }
-
-  void _step(int amount) {
-    setState(() {
-      _cursor += amount;
-      _progress = _cursor == 0
-          ? LibraryProgress.unplayed
-          : LibraryProgress.started;
-      _conflicts = {};
-    });
-    _persist();
-  }
-
-  void _persist() {
-    final entry = widget.puzzle.entry;
-    unawaited(
-      widget.store.save(
-        entry.id,
-        entry.revision,
-        LibrarySave(List.of(_history), _cursor, DateTime.now(), _progress),
-      ),
-    );
-  }
-
-  void _check() {
-    final digits = _position.digits;
-    final manual = widget.puzzle.manual;
-    final verified = widget.puzzle.finalCheck
-        ? listEquals(_board.solution, digits)
-        : _board.accepts(digits);
-    if (verified && !manual) {
-      setState(() {
-        _progress = LibraryProgress.solved;
-        _conflicts = {};
-      });
-      _persist();
-      _feedback('Puzzle solved.');
-    } else {
-      setState(
-        () => _conflicts = _board.conflicts(digits, visible: _visible).toSet(),
-      );
-      _feedback(
-        digits.contains(0)
-            ? 'There are still empty cells.'
-            : widget.puzzle.finalCheck
-            ? 'The completed grid differs from the author’s solution.'
-            : 'Check the marked cells and the puzzle rules.',
-      );
-    }
-  }
-
-  void _manual() {
-    final digits = _position.digits;
-    if (digits.contains(0) || _board.conflicts(digits).isNotEmpty) {
-      _feedback('Complete the grid and resolve Sudoku conflicts first.');
-      return;
-    }
-    setState(() => _progress = LibraryProgress.manual);
-    _persist();
-    _feedback('Marked solved by manual check.');
-  }
-
-  void _feedback(String message) => ScaffoldMessenger.of(
-    context,
-  ).showSnackBar(SnackBar(content: Text(message)));
-
-  @override
-  Widget build(BuildContext context) {
-    final entry = widget.puzzle.entry;
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(entry.title),
-        actions: [
-          IconButton(
-            tooltip: 'Undo',
-            icon: const Icon(Icons.undo),
-            onPressed: _cursor > 0 ? () => _step(-1) : null,
-          ),
-          IconButton(
-            tooltip: 'Redo',
-            icon: const Icon(Icons.redo),
-            onPressed: _cursor + 1 < _history.length ? () => _step(1) : null,
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final width = math.min(constraints.maxWidth, 540.0);
-            return Center(
-              child: SizedBox(
-                width: width,
-                child: ListView(
-                  padding: const EdgeInsets.all(12),
-                  children: [
-                    Text(
-                      [
-                        'By ${entry.author}',
-                        if (_progress != LibraryProgress.unplayed)
-                          _progressLabel(_progress),
-                      ].join(' · '),
-                    ),
-                    const SizedBox(height: 8),
-                    SudokuBoardView(
-                      size: _board.size,
-                      cells: _position.digits,
-                      regions: _board.regions,
-                      onCell: _select,
-                      fixed: _board.indices
-                          .where((index) => _board.givens[index] != 0)
-                          .toSet(),
-                      selected: _cell,
-                      visible: _visible,
-                      notes: _position.notes,
-                      conflicts: _conflicts,
-                      marks: _marks(widget.puzzle),
-                      clueArtwork: widget.puzzle.refs.isEmpty
-                          ? null
-                          : LibraryArtwork(widget.puzzle),
-                      onDrop: (cell, data) {
-                        if (data.value case final digit?) _write(cell, digit);
-                      },
-                      onDigit: _write,
-                      onErase: (index) => _write(index, 0),
-                    ),
-                    const SizedBox(height: 12),
-                    Wrap(
-                      spacing: 5,
-                      runSpacing: 6,
-                      children: [
-                        for (var digit = 1; digit <= _board.size; digit++)
-                          Semantics(
-                            button: true,
-                            label: 'Digit $digit',
-                            selected: _digit == digit,
-                            child: Draggable<BoardDrag>(
-                              data: BoardDrag.digit(digit),
-                              feedback: BoardDigitFace(
-                                value: digit,
-                                selected: true,
-                              ),
-                              child: InkWell(
-                                onTap: () {
-                                  if (_cell case final cell?) {
-                                    setState(() => _digit = null);
-                                    _write(cell, digit);
-                                  } else {
-                                    setState(
-                                      () => _digit = _digit == digit
-                                          ? null
-                                          : digit,
-                                    );
-                                  }
-                                },
-                                child: BoardDigitFace(
-                                  value: digit,
-                                  selected: _digit == digit,
-                                ),
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 6,
-                      children: [
-                        if (width < _board.size * 48 + 24)
-                          TextButton.icon(
-                            icon: const Icon(Icons.my_location),
-                            label: const Text('Choose cell'),
-                            onPressed: _chooseCell,
-                          ),
-                        FilterChip(
-                          label: const Text('Notes'),
-                          selected: _notes,
-                          onSelected: (selected) =>
-                              setState(() => _notes = selected),
-                        ),
-                        TextButton.icon(
-                          icon: const Icon(Icons.backspace_outlined),
-                          label: const Text('Erase'),
-                          onPressed: _cell == null
-                              ? null
-                              : () => _write(_cell!, 0),
-                        ),
-                        if (widget.puzzle.manual)
-                          FilledButton.tonal(
-                            onPressed: _manual,
-                            child: const Text('Mark solved manually'),
-                          )
-                        else
-                          FilledButton.tonal(
-                            onPressed: _check,
-                            child: const Text('Check board'),
-                          ),
-                      ],
-                    ),
-                    if (widget.puzzle.manual)
-                      const Text(
-                        'Manual check · Use the author’s rules to verify the completed grid.',
-                      ),
-                    const SizedBox(height: 12),
-                    _RuleChips(entry: entry, tappable: true),
-                    const SizedBox(height: 8),
-                    Text(entry.rules),
-                  ],
-                ),
-              ),
-            );
-          },
-        ),
-      ),
-    );
-  }
 }
 
 List<BoardMark> _marks(LibraryDownload puzzle) => puzzle.refs.isNotEmpty

@@ -10,16 +10,22 @@ import 'package:sensors_plus/sensors_plus.dart';
 import 'board_moment.dart';
 import 'board_view.dart';
 import 'campaign.dart';
+import 'campaign_ui.dart';
 import 'creature_view.dart';
+import 'creature_social_view.dart';
 import 'creatures.dart';
 import 'hum.dart';
+import 'settlement_scene.dart';
 import 'tilt_input.dart';
+import 'rule_lessons.dart';
+import 'glyph_rain.dart';
 
 class ColonyScreen extends StatefulWidget {
   const ColonyScreen({
     super.key,
     required this.campaign,
     required this.onChanged,
+    this.onArchive,
     this.onOpenCreator,
     this.onOpenSettings,
     this.onOpenProfile,
@@ -30,6 +36,7 @@ class ColonyScreen extends StatefulWidget {
 
   final Campaign campaign;
   final VoidCallback onChanged;
+  final Future<bool> Function(bool Function(Campaign))? onArchive;
   final VoidCallback? onOpenCreator;
   final VoidCallback? onOpenSettings;
   final ValueChanged<Creature>? onOpenProfile;
@@ -49,6 +56,7 @@ class _ColonyScreenState extends State<ColonyScreen> {
   int? _slide;
   int? _token;
   int? _digit;
+  String? _fragment;
   String? _offer;
   int? _region;
   bool _notes = false;
@@ -60,6 +68,7 @@ class _ColonyScreenState extends State<ColonyScreen> {
   Set<int> _knownVisible = {};
   List<int> _newlyLit = [];
   int _revealSerial = 0;
+  String? _teacherScheduled;
 
   Campaign get run => widget.campaign;
   BoardSpec get board => run.board;
@@ -95,6 +104,7 @@ class _ColonyScreenState extends State<ColonyScreen> {
   void _updateBoard() {
     _boardId = board.id;
     _cell = _slide = _token = _digit = null;
+    _fragment = null;
     _offer = _feedback = _highlightRule = null;
     _notes = false;
     _allMarks = true;
@@ -103,6 +113,7 @@ class _ColonyScreenState extends State<ColonyScreen> {
     _knownVisible = run.visible;
     _newlyLit = [];
     _tilt.reset(run.gravity);
+    _teacherScheduled = null;
   }
 
   void _connectMotion() {
@@ -151,8 +162,13 @@ class _ColonyScreenState extends State<ColonyScreen> {
 
   void _selectToken(int index) => _change(() {
     _releaseOffer();
+    _fragment = null;
     _digit = _slide = null;
-    // A selected sentence token must stay movable while the board is sliding.
+    if (run.sliding && !run.tutorialReady) {
+      _token = null;
+      _feedback = 'Slide the loose tiles until each gap can take a 4.';
+      return;
+    }
     if (_token != index) {
       _token = index;
       _feedback = 'Tap a gap to place this 4.';
@@ -172,6 +188,12 @@ class _ColonyScreenState extends State<ColonyScreen> {
       _useToken(index, token);
     } else if (_offer case final String offer) {
       _claim(offer, index);
+    } else if (_fragment case final String fragment) {
+      final accepted = run.executeBoardCommand(
+        BoardCommand.placeTile(index, fragment),
+      );
+      _result(accepted, 'This fragment cannot be placed in that square.');
+      if (accepted) _fragment = null;
     } else if (_digit case final int digit) {
       _place(index, digit);
     } else if (run.sliding) {
@@ -179,7 +201,17 @@ class _ColonyScreenState extends State<ColonyScreen> {
         _shift(_slide!, index);
       } else if (run.cells[index] > 0 && !run.anchors.contains(index)) {
         _slide = _slide == index ? null : index;
-        _feedback = _slide == null ? null : 'Choose a gap beside this tile.';
+        final tracks = board
+            .adjacent(index)
+            .where((n) => run.cells[n] == 0)
+            .map(
+              (n) => 'row ${n ~/ board.size + 1}, column ${n % board.size + 1}',
+            );
+        _feedback = _slide == null
+            ? null
+            : tracks.isEmpty
+            ? 'This tile is blocked.'
+            : 'Slide into ${tracks.join(' or ')}.';
       } else if (run.anchors.contains(index)) {
         _feedback = 'That clue is anchored.';
       }
@@ -227,7 +259,7 @@ class _ColonyScreenState extends State<ColonyScreen> {
     final accepted = run.place(index, digit);
     _result(accepted, 'Choose a visible open square and a digit in stock.');
     _cell = index;
-    if (accepted && (run.tray[digit] ?? 0) == 0) _digit = null;
+    if (accepted) _digit = null;
   }
 
   void _claim(String offer, int index) {
@@ -245,6 +277,13 @@ class _ColonyScreenState extends State<ColonyScreen> {
   void _selectDigit(int digit) => _change(() {
     _releaseOffer();
     _token = _slide = null;
+    _fragment = null;
+    if (!_notes && _cell != null) {
+      final cell = _cell!;
+      _digit = digit;
+      _place(cell, digit);
+      return;
+    }
     _digit = _digit == digit ? null : digit;
     _feedback = _digit == null
         ? null
@@ -283,18 +322,14 @@ class _ColonyScreenState extends State<ColonyScreen> {
 
   @override
   Widget build(BuildContext context) {
+    _scheduleFirstLesson();
     final textTheme = Theme.of(context).textTheme;
     final reducedMotion =
         widget.reducedMotion || MediaQuery.disableAnimationsOf(context);
-    final gravityUp = board.gravity && run.gravity == GravityDirection.up;
     final tray = _tray();
     final landscape = <Widget>[
-      if (gravityUp) ...[tray, const SizedBox(height: 12)],
       _board(reducedMotion),
-      if (!gravityUp && tray is! SizedBox) ...[
-        const SizedBox(height: 12),
-        tray,
-      ],
+      if (tray is! SizedBox) ...[const SizedBox(height: 12), tray],
       const SizedBox(height: 4),
       _boardTools(),
     ];
@@ -360,6 +395,20 @@ class _ColonyScreenState extends State<ColonyScreen> {
                         ),
                       ),
                     ),
+                  if (_stageGuidance case final String guidance)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        guidance,
+                        style: textTheme.bodySmall?.copyWith(
+                          color: Hum.mutedInk,
+                        ),
+                      ),
+                    ),
+                  if (board.fog != FogKind.none) ...[
+                    _torchWorkRow(),
+                    const SizedBox(height: 8),
+                  ],
                   if (_feedback != null)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 8),
@@ -417,6 +466,69 @@ class _ColonyScreenState extends State<ColonyScreen> {
     );
   }
 
+  String? get _stageGuidance => switch (board.id) {
+    'growth-6' =>
+      'Found the village · send one urgent 6 or queue a batch while you solve.',
+    'growth-7' =>
+      'Village paths · two field posts can split digit and construction work.',
+    'growth-8' =>
+      'City lots · finish a delivery while a named builder fits a socket.',
+    'growth-9' =>
+      'The full grid · three city posts can balance carriers and builders.',
+    'renban' =>
+      'Sort the recovered pieces, then request the copies the worm captured.',
+    'arrows' =>
+      'Found the civilization · the fourth post and Meeting Hall open here.',
+    _ => null,
+  };
+
+  Widget _torchWorkRow() {
+    final staffing = run.fogStaffing;
+    final names = staffing.assignedWorkerIds
+        .map(
+          (id) => run.creatures
+              .where((creature) => creature.id == id)
+              .firstOrNull
+              ?.name,
+        )
+        .whereType<String>()
+        .toList();
+    final torchJobs = run.jobs.where((job) => job.kind == TaskKind.torch);
+    final detail = staffing.shortfall > 0
+        ? 'Crew short. Earned light stays safe while you recover a worker.'
+        : staffing.sequential
+        ? 'One Helper · stationary lamps keep each earned patch lit.'
+        : torchJobs.isNotEmpty
+        ? '${torchJobs.length} earned ${torchJobs.length == 1 ? 'light is' : 'lights are'} in transit.'
+        : 'Crew ready for the next earned patch.';
+    return CampaignWorkRow(
+      title:
+          'Torches ${staffing.assignedWorkerIds.length}/${staffing.required}',
+      detail: detail,
+      workerNames: names,
+      shortfall: staffing.shortfall,
+      actions: [
+        if (staffing.shortfall > 0 && run.population.canWelcome)
+          CampaignWorkAction(
+            label: 'Welcome resident',
+            icon: Icons.person_add_alt_1_outlined,
+            onPressed: () => _change(run.welcomeResident),
+          ),
+        CampaignWorkAction(
+          label: 'Open village',
+          icon: Icons.cottage_outlined,
+          onPressed: _settlement,
+        ),
+        if (staffing.shortfall > 0 && widget.onOpenCreator != null)
+          CampaignWorkAction(
+            label: 'Raise a helper',
+            icon: Icons.egg_alt_outlined,
+            onPressed: widget.onOpenCreator,
+          ),
+      ],
+    );
+  }
+
   Widget _openingPrompt() {
     final pieces =
         'In this 4×4 puzzle, the 4 is missing. Can you find someone to help you?'
@@ -443,6 +555,7 @@ class _ColonyScreenState extends State<ColonyScreen> {
                           data: BoardDrag.digit(4, token: i),
                           label: '4, sentence tile ${i + 1} of 3',
                           selected: _token == i,
+                          offered: run.tutorialReady || !run.sliding,
                           onTap: () => _selectToken(i),
                           onDrag: _setDragging,
                         ),
@@ -500,6 +613,52 @@ class _ColonyScreenState extends State<ColonyScreen> {
         : null;
     final reaction = run.reaction;
     final crew = _reactionCrew(reaction);
+    List<int> torchCells(ColonyJob job) {
+      if (job.reveal == 'starter') return board.starterPatch;
+      return board.reveals
+              .where((reveal) => reveal.id == job.reveal)
+              .firstOrNull
+              ?.patch ??
+          const [];
+    }
+
+    final torchTrips = [
+      for (final job in run.jobs.where((job) => job.kind == TaskKind.torch))
+        for (final worker in run.creatures.where(
+          (creature) => creature.id == job.workerId,
+        ))
+          (job: job, worker: worker, cells: torchCells(job)),
+    ];
+    final busyWorkers = run.jobs.map((job) => job.workerId).toSet();
+    final homeLimit = math.max(0, 6 - torchTrips.length - crew.length);
+    final residentHomes = [
+      for (final address in run.residentAddresses.entries)
+        if (!busyWorkers.contains(address.key) &&
+            run.visible.contains(address.value))
+          for (final resident in run.creatures.where(
+            (creature) => creature.id == address.key,
+          ))
+            (resident: resident, cell: address.value),
+    ].take(homeLimit).toList();
+    final scenicLimit = math.max(
+      0,
+      6 - torchTrips.length - crew.length - residentHomes.length,
+    );
+    final residentHomeIds = residentHomes
+        .map((home) => home.resident.id)
+        .toSet();
+    final reactionIds = crew.map((resident) => resident.id).toSet();
+    final roamingResidents = run.antics == Antics.off
+        ? const <Creature>[]
+        : run.creatures
+              .where(
+                (resident) =>
+                    !busyWorkers.contains(resident.id) &&
+                    !residentHomeIds.contains(resident.id) &&
+                    !reactionIds.contains(resident.id),
+              )
+              .take(scenicLimit)
+              .toList(growable: false);
     final game = SudokuBoardView(
       key: ValueKey(board.id),
       size: board.size,
@@ -514,6 +673,14 @@ class _ColonyScreenState extends State<ColonyScreen> {
       conflicts: _conflicts,
       marks: marks,
       sliding: run.sliding,
+      renderGiven: run.libraryChallenge || run.population.communalCapacity == 0
+          ? null
+          : (index, value, style) => RainGlyph(
+              run: run,
+              sourceId: 'given-${board.id}-$index',
+              text: value,
+              style: style,
+            ),
       onCell: _onCell,
       onDrop: _onDrop,
       onDigit: _digitFromKeyboard,
@@ -533,6 +700,48 @@ class _ColonyScreenState extends State<ColonyScreen> {
             child: Stack(
               children: [
                 game,
+                if (roamingResidents.isNotEmpty)
+                  Positioned.fill(
+                    child: BoardRoamingLayer(
+                      dimension: board.size,
+                      cells: run.cells,
+                      visible: run.visible,
+                      residents: roamingResidents,
+                      reducedMotion: reducedMotion,
+                    ),
+                  ),
+                for (final home in residentHomes)
+                  Positioned.fill(
+                    child: ResidentHomeMoment(
+                      key: ValueKey('resident-home-${home.resident.id}'),
+                      dimension: board.size,
+                      cell: home.cell,
+                      resident: home.resident,
+                      reducedMotion: reducedMotion,
+                    ),
+                  ),
+                if (run.shatter case final ShatterLedger ledger
+                    when !ledger.assembled)
+                  Positioned.fill(
+                    child: GridShatterMoment(
+                      key: ValueKey('shatter-${ledger.openedSeams}'),
+                      dimension: board.size,
+                      openedSeams: ledger.openedSeams,
+                      totalSeams: ledger.totalSeams,
+                      workers: run.creatures.take(4).toList(),
+                      reducedMotion: reducedMotion,
+                    ),
+                  ),
+                for (final trip in torchTrips)
+                  Positioned.fill(
+                    child: TorchRouteMoment(
+                      key: ValueKey('torch-trip-${trip.job.id}'),
+                      dimension: board.size,
+                      cells: trip.cells,
+                      worker: trip.worker,
+                      reducedMotion: reducedMotion,
+                    ),
+                  ),
                 if (reaction != null &&
                     reaction.index >= 0 &&
                     run.visible.contains(reaction.index) &&
@@ -597,28 +806,21 @@ class _ColonyScreenState extends State<ColonyScreen> {
         run.tray.values.every((value) => value == 0) &&
         run.offers.isEmpty)
       return const SizedBox.shrink();
+    int unsorted(int digit) =>
+        run.shatter?.fragments.values
+            .where(
+              (fragment) =>
+                  fragment.digit == digit &&
+                  fragment.state == ShatterFragmentState.unsorted,
+            )
+            .length ??
+        0;
     int unreserved(int digit) =>
-        (run.tray[digit] ?? 0) -
+        run.tileSupply[digit - 1].available -
+        unsorted(digit) -
         run.offers
             .where((offer) => offer.idle && offer.digit == digit)
             .fold(0, (sum, offer) => sum + offer.count);
-    final values = Iterable<int>.generate(
-      board.size,
-      (index) => index + 1,
-    ).where((digit) => unreserved(digit) > 0 || _notes).toList();
-    if (board.gravity &&
-        (run.gravity == GravityDirection.left ||
-            run.gravity == GravityDirection.up)) {
-      values.sort((a, b) => b.compareTo(a));
-    }
-    final alignment = board.gravity
-        ? switch (run.gravity) {
-            GravityDirection.left => WrapAlignment.start,
-            GravityDirection.right => WrapAlignment.end,
-            GravityDirection.up ||
-            GravityDirection.down => WrapAlignment.center,
-          }
-        : WrapAlignment.start;
     return _Panel(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -628,7 +830,7 @@ class _ColonyScreenState extends State<ColonyScreen> {
             spacing: 12,
             children: [
               Text(
-                _notes ? 'Candidates' : 'Digit tray',
+                _notes ? 'Candidates' : 'Tile supply',
                 style: const TextStyle(fontWeight: FontWeight.w800),
               ),
               if (grown && !run.cleared)
@@ -639,50 +841,187 @@ class _ColonyScreenState extends State<ColonyScreen> {
                 ),
             ],
           ),
-          if (values.isEmpty && run.offers.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 6),
-              child: Text(
-                'No digits in the tray.',
-                style: TextStyle(color: Hum.mutedInk),
+          const SizedBox(height: 6),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: SizedBox(
+              width: 174,
+              child: GridView.count(
+                key: const ValueKey('tile-supply-grid'),
+                crossAxisCount: 3,
+                mainAxisSpacing: 6,
+                crossAxisSpacing: 6,
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                children: [
+                  for (var digit = 1; digit <= 9; digit++)
+                    if (!run.tileSupply[digit - 1].enabled)
+                      Semantics(
+                        label: 'Digit $digit unavailable on this board',
+                        enabled: false,
+                        child: ExcludeSemantics(
+                          child: BoardDigitFace(value: digit, used: true),
+                        ),
+                      )
+                    else if (!_notes && unreserved(digit) == 0)
+                      Semantics(
+                        key: ValueKey('tray-$digit'),
+                        label: 'Digit $digit, none available. Request $digit',
+                        button: true,
+                        onTap: () => _requests(digit),
+                        child: ExcludeSemantics(
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(8),
+                            onTap: () => _requests(digit),
+                            child: BoardDigitFace(
+                              value: digit,
+                              used: true,
+                              footer: 'request',
+                            ),
+                          ),
+                        ),
+                      )
+                    else
+                      _DigitControl(
+                        key: ValueKey('tray-$digit'),
+                        data: BoardDrag.digit(digit),
+                        label: _notes
+                            ? 'Candidate $digit'
+                            : 'Digit $digit, ${unreserved(digit)} available',
+                        count: _notes ? null : unreserved(digit),
+                        selected: _digit == digit,
+                        onTap: () => _selectDigit(digit),
+                        onDrag: _setDragging,
+                      ),
+                ],
               ),
             ),
-          Wrap(
-            alignment: alignment,
-            spacing: 6,
-            runSpacing: 6,
-            children: [
-              for (final digit in values)
-                _DigitControl(
-                  key: ValueKey('tray-$digit'),
-                  data: BoardDrag.digit(digit),
-                  label: _notes
-                      ? 'Candidate $digit'
-                      : 'Digit $digit, ${unreserved(digit)} available',
-                  count: _notes ? null : unreserved(digit),
-                  selected: _digit == digit,
-                  onTap: () => _selectDigit(digit),
-                  onDrag: _setDragging,
-                ),
-              for (final offer in run.offers)
-                _DigitControl(
-                  key: ValueKey('offer-${offer.id}'),
-                  data: BoardDrag.digit(offer.digit, offerId: offer.id),
-                  label:
-                      'Helper offers ${offer.count} copies of ${offer.digit}',
-                  count: offer.count,
-                  selected: _offer == offer.id,
-                  offered: true,
-                  onTap: () => _selectOffer(offer),
-                  onDrag: (dragging) {
-                    _setDragging(dragging);
-                    if (dragging) _change(() => run.holdOffer(offer.id));
-                    if (!dragging && _offer != offer.id)
-                      _change(() => run.holdOffer(null));
-                  },
-                ),
-            ],
           ),
+          if (run.offers.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final offer in run.offers)
+                  _DigitControl(
+                    key: ValueKey('offer-${offer.id}'),
+                    data: BoardDrag.digit(offer.digit, offerId: offer.id),
+                    label:
+                        'Helper offers ${offer.count} copies of ${offer.digit}',
+                    count: offer.count,
+                    selected: _offer == offer.id,
+                    offered: true,
+                    onTap: () => _selectOffer(offer),
+                    onDrag: (dragging) {
+                      _setDragging(dragging);
+                      if (dragging) _change(() => run.holdOffer(offer.id));
+                      if (!dragging && _offer != offer.id)
+                        _change(() => run.holdOffer(null));
+                    },
+                  ),
+              ],
+            ),
+          ],
+          if (run.digitReservations.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            const Text(
+              'Pad deliveries',
+              style: TextStyle(fontWeight: FontWeight.w800),
+            ),
+            for (final reservation in run.digitReservations)
+              ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: Text(
+                  '${reservation.digit}',
+                  style: const TextStyle(
+                    fontFamily: Hum.digitFont,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                title: Text(switch (reservation.phase) {
+                  DigitReservationPhase.queued => 'Waiting for a worker',
+                  DigitReservationPhase.traveling => 'Coming from the pad',
+                  DigitReservationPhase.offered => 'Ready to place',
+                }),
+                subtitle: reservation.workerId == null
+                    ? null
+                    : Text(
+                        run.creatures
+                                .where(
+                                  (creature) =>
+                                      creature.id == reservation.workerId,
+                                )
+                                .firstOrNull
+                                ?.name ??
+                            reservation.workerId!,
+                      ),
+                trailing: TextButton(
+                  onPressed: () => _change(() {
+                    final taken = run.takeOverDigitReservation(reservation.id);
+                    if (taken) {
+                      _releaseOffer();
+                      _digit = _token = _slide = null;
+                      _fragment = reservation.tileId;
+                      _feedback =
+                          'Tile ${reservation.digit} returned to your hand. Tap an eligible square.';
+                    }
+                  }),
+                  child: const Text('Use now'),
+                ),
+              ),
+          ],
+          if (run.shatter case final ShatterLedger ledger
+              when ledger.canSort) ...[
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'Loose fragments',
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ),
+                TextButton(
+                  onPressed: () => _change(run.sortRemainingShatter),
+                  child: const Text('Sort remaining'),
+                ),
+              ],
+            ),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final fragment in ledger.fragments.values.where(
+                  (item) => item.state == ShatterFragmentState.unsorted,
+                ))
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ChoiceChip(
+                        selected: _fragment == fragment.tileId,
+                        label: Text('${fragment.digit} · Use'),
+                        onSelected: (_) => _change(() {
+                          _releaseOffer();
+                          _digit = _token = _slide = null;
+                          _fragment = fragment.tileId;
+                          _feedback =
+                              'Tap an eligible square for ${fragment.digit}.';
+                        }),
+                      ),
+                      IconButton(
+                        tooltip: 'Sort ${fragment.digit} into pad',
+                        onPressed: () => _change(
+                          () => run.sortShatterFragment(fragment.tileId),
+                        ),
+                        icon: const Icon(Icons.move_to_inbox_outlined),
+                      ),
+                    ],
+                  ),
+              ],
+            ),
+          ],
           if (run.reaction case final CreatureReaction reaction
               when reaction.index < 0)
             if (_reactionCrew(reaction).isNotEmpty)
@@ -704,6 +1043,7 @@ class _ColonyScreenState extends State<ColonyScreen> {
   void _selectOffer(DigitOffer offer) => _change(() {
     final selected = _offer != offer.id;
     _releaseOffer();
+    _fragment = null;
     _token = _slide = _digit = null;
     if (selected) {
       _offer = offer.id;
@@ -800,7 +1140,7 @@ class _ColonyScreenState extends State<ColonyScreen> {
           TextButton.icon(
             onPressed: _rules,
             icon: const Icon(Icons.menu_book_outlined),
-            label: const Text('Rules'),
+            label: const Text('? Rule help'),
           ),
         if (board.size >= 7 && !run.cleared)
           TextButton.icon(
@@ -825,12 +1165,22 @@ class _ColonyScreenState extends State<ColonyScreen> {
         onPressed: () => _change(() => run.returnToCampaign()),
       );
     }
+    if (board.id == 'growth-9' && run.shatter?.assembled != true) {
+      return _PrimaryAction(
+        label: 'Break open the grid',
+        icon: Icons.grid_off_outlined,
+        onPressed: _shatterGrid,
+      );
+    }
     final routeChoice =
         board.id == 'arrows' ||
         board.finale ||
         board.expedition ||
         board.id == 'trail' ||
         board.id == 'linked-torches';
+    final endingComplete = campaignBoards
+        .where((candidate) => candidate.finale && candidate.route != null)
+        .any((candidate) => run.finaleCeremony(candidate.route!).complete);
     return Wrap(
       spacing: 10,
       runSpacing: 8,
@@ -862,7 +1212,16 @@ class _ColonyScreenState extends State<ColonyScreen> {
             onPressed: _settlement,
             child: const Text('Build the Meeting Hall'),
           ),
-        if (run.completed)
+        if (board.finale && board.route != null)
+          OutlinedButton(
+            onPressed: () => _ceremony(board.route!),
+            child: Text(
+              run.finaleCeremony(board.route!).complete
+                  ? 'Review ending'
+                  : 'Choose dedication',
+            ),
+          ),
+        if (run.completed && endingComplete)
           OutlinedButton(
             onPressed: _prestige,
             child: const Text('Start a new colony'),
@@ -916,6 +1275,26 @@ class _ColonyScreenState extends State<ColonyScreen> {
               context,
             ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
           ),
+          const SizedBox(height: 4),
+          SettlementScene(
+            seed: run.seed,
+            creatures: run.creatures,
+            jobs: run.jobs,
+            projects: run.projects,
+            projectProgresses: [
+              for (final project in run.projects)
+                run.projectProgress(project.id),
+            ],
+            buildings: run.buildings,
+            buildingGlyphs: run.buildingGlyphs,
+            materials: run.materials,
+            campaign: run,
+            socialMoments: run.socialMoments,
+            antics: run.antics,
+            reducedMotion: reducedMotion,
+            onResidentPressed: widget.onOpenProfile,
+          ),
+          const Divider(height: 12),
           Row(
             children: [
               _OfferSprite(
@@ -1040,10 +1419,11 @@ class _ColonyScreenState extends State<ColonyScreen> {
         ),
       );
 
-  void _requests() {
-    var digit = board.size;
+  void _requests([int? initialDigit]) {
+    var digit = initialDigit ?? board.size;
     var count = 1;
     var priority = false;
+    var fromPad = false;
     _sheet<void>(
       'Request digits',
       (sheet) => StatefulBuilder(
@@ -1061,6 +1441,7 @@ class _ColonyScreenState extends State<ColonyScreen> {
                     onSelected: (_) => update(() {
                       digit = value;
                       count = 1;
+                      fromPad = false;
                     }),
                   ),
               ],
@@ -1089,16 +1470,39 @@ class _ColonyScreenState extends State<ColonyScreen> {
               value: priority,
               onChanged: (value) => update(() => priority = value),
             ),
+            if ((run.tray[digit] ?? 0) > 0)
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Bring from pad'),
+                subtitle: const Text(
+                  'Reserve one existing physical tile for a worker handoff.',
+                ),
+                value: fromPad,
+                onChanged: (value) => update(() {
+                  fromPad = value;
+                  if (value) count = 1;
+                }),
+              ),
             _PrimaryAction(
-              label: 'Send helper',
+              label: fromPad ? 'Bring from pad' : 'Send helper',
               icon: Icons.outbound_outlined,
               onPressed: () {
                 Navigator.pop(sheet);
                 _change(
                   () => _result(
-                    run.requestDigit(digit, count: count, priority: priority),
-                    'No more copies of $digit are needed.',
-                    'Requested $digit × $count.',
+                    fromPad
+                        ? run.requestPadDelivery(digit, priority: priority)
+                        : run.requestDigit(
+                            digit,
+                            count: count,
+                            priority: priority,
+                          ),
+                    fromPad
+                        ? 'No available $digit can be reserved from the pad.'
+                        : 'No more copies of $digit are needed.',
+                    fromPad
+                        ? 'A helper is bringing an existing $digit.'
+                        : 'Requested $digit × $count.',
                   ),
                 );
               },
@@ -1109,7 +1513,81 @@ class _ColonyScreenState extends State<ColonyScreen> {
     );
   }
 
+  void _scheduleFirstLesson() {
+    if (_teacherScheduled == board.id ||
+        !TickerMode.valuesOf(context).enabled ||
+        run.libraryChallenge ||
+        (run.shatter?.assembled == false && board.id == 'renban'))
+      return;
+    final id = board.id;
+    final lessons = RuleLesson.forBoard(board);
+    if (lessons.isEmpty || lessons.every((l) => run.seenLessons.contains(l.id)))
+      return;
+    _teacherScheduled = id;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || board.id != id) return;
+      if (!TickerMode.valuesOf(context).enabled ||
+          ModalRoute.of(context)?.isCurrent != true) {
+        _teacherScheduled = null;
+        return;
+      }
+      final fresh = lessons.where((l) => !run.seenLessons.contains(l.id));
+      final familiar = lessons.where((l) => run.seenLessons.contains(l.id));
+      _openWorkbook([...fresh, ...familiar]);
+    });
+  }
+
+  void _openWorkbook(List<RuleLesson> lessons, {bool spotlight = true}) {
+    run.markLesson(lessons.first.id);
+    _sheet<void>(
+      'Rule help',
+      (sheet) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (run.libraryChallenge)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text(board.description),
+            ),
+          RuleWorkbook(
+            lessons: lessons,
+            teacher: run.creatures.firstOrNull,
+            reducedMotion: widget.reducedMotion,
+            onRead: (id) => run.markLesson(id),
+            onPractice: (id) => run.markLesson(id, practiced: true),
+            onPlay: () => Navigator.pop(sheet),
+            onSpotlight: spotlight
+                ? (id) {
+                    Navigator.pop(sheet);
+                    setState(() {
+                      _allMarks = false;
+                      _highlightRule = id;
+                    });
+                  }
+                : null,
+          ),
+          if (spotlight && !_allMarks)
+            TextButton(
+              onPressed: () {
+                Navigator.pop(sheet);
+                setState(() {
+                  _allMarks = true;
+                  _highlightRule = null;
+                });
+              },
+              child: const Text('Show all markings'),
+            ),
+        ],
+      ),
+    );
+  }
+
   void _rules() {
+    final lessons = RuleLesson.forBoard(board);
+    if (lessons.isNotEmpty) {
+      _openWorkbook(lessons);
+      return;
+    }
     _sheet<void>(
       'Board rules',
       (sheet) => Column(
@@ -1118,55 +1596,15 @@ class _ColonyScreenState extends State<ColonyScreen> {
           Text(
             'Use each digit from 1 to ${board.size} once in every row, column and outlined region.',
           ),
-          if (board.fog.name != 'none')
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Text(switch (board.fog.name) {
-                'trail' =>
-                  'Trail fog. Each correct placement lights the next part of the trail.',
-                'linked' =>
-                  'Linked torches. Complete the linked placements to light the next patch.',
-                _ =>
-                  'Halo fog. A torch lights the cells around a correct placement.',
-              }),
+          if (run.libraryChallenge) Text(board.description),
+          if (run.sliding)
+            const Text(
+              'Slide a loose tile into a touching gap. Anchored clues stay in place.',
             ),
-          if (board.gravity)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Text(
-                'Gravity moves the loose tray digits. Use the four arrows, W A S D, or tilt a supported phone.',
-              ),
-            ),
-          for (final kind in board.rules.map((rule) => rule.kind).toSet())
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              title: Text(kind.label),
-              subtitle: Text(kind.explanation),
-              trailing: IconButton(
-                tooltip: 'Show ${kind.label} on the board',
-                icon: const Icon(Icons.center_focus_strong),
-                onPressed: () {
-                  Navigator.pop(sheet);
-                  setState(() {
-                    _allMarks = false;
-                    _highlightRule = kind.name;
-                    _feedback =
-                        'Showing ${kind.label}. Open Rules to restore all markings.';
-                  });
-                },
-              ),
-            ),
-          if (!_allMarks)
-            TextButton(
-              onPressed: () {
-                Navigator.pop(sheet);
-                setState(() {
-                  _allMarks = true;
-                  _feedback = null;
-                });
-              },
-              child: const Text('Show all markings'),
-            ),
+          FilledButton(
+            onPressed: () => Navigator.pop(sheet),
+            child: const Text('Play'),
+          ),
         ],
       ),
     );
@@ -1298,6 +1736,89 @@ class _ColonyScreenState extends State<ColonyScreen> {
     );
   }
 
+  void _shatterGrid() {
+    run.beginShatter();
+    widget.onChanged();
+    _sheet<void>(
+      'Break open the grid',
+      (sheet) => StatefulBuilder(
+        builder: (context, update) {
+          final ledger = run.shatter!;
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                ledger.assembled
+                    ? 'The crew has lifted the frame. Numbered fragments are ready beside the Renban board.'
+                    : 'Choose a seam for the next named worker, or cue the remaining strikes.',
+              ),
+              const SizedBox(height: 12),
+              LinearProgressIndicator(
+                value: ledger.totalSeams == 0
+                    ? 1
+                    : ledger.openedSeams / ledger.totalSeams,
+                semanticsLabel:
+                    '${ledger.openedSeams} of ${ledger.totalSeams} seams open',
+                color: Hum.pearEdge,
+                backgroundColor: Hum.cyan,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '${ledger.openedSeams} of ${ledger.totalSeams} seams open',
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              if (!ledger.assembled)
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: ledger.canStrike
+                          ? () {
+                              run.strikeShatterSeam();
+                              update(() {});
+                              setState(() {});
+                              widget.onChanged();
+                            }
+                          : null,
+                      icon: const Icon(Icons.gesture),
+                      label: const Text('Strike next seam'),
+                    ),
+                    FilledButton.icon(
+                      onPressed: ledger.canStrike
+                          ? () {
+                              run.breakRemaining();
+                              update(() {});
+                              setState(() {});
+                              widget.onChanged();
+                            }
+                          : null,
+                      icon: const Icon(Icons.auto_fix_high_outlined),
+                      label: const Text('Break remaining'),
+                    ),
+                  ],
+                )
+              else
+                _PrimaryAction(
+                  label: 'Continue to Renban',
+                  icon: Icons.arrow_forward,
+                  onPressed: () {
+                    Navigator.pop(sheet);
+                    _change(() {
+                      _result(
+                        run.openBoard(ledger.destinationBoardId),
+                        'The Renban lesson is still locked.',
+                      );
+                    });
+                  },
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
   void _more() {
     final mapUnlocked = run.mapUnlocked;
     _sheet<void>(
@@ -1322,7 +1843,9 @@ class _ColonyScreenState extends State<ColonyScreen> {
                 _change(() => run.returnToCampaign());
               },
             ),
-          if (run.learnedRules.isNotEmpty || run.learnedFog.isNotEmpty)
+          if (run.seenLessons.isNotEmpty ||
+              run.learnedRules.isNotEmpty ||
+              run.learnedFog.isNotEmpty)
             ListTile(
               leading: const Icon(Icons.menu_book_outlined),
               title: const Text('Rule Almanac'),
@@ -1338,6 +1861,16 @@ class _ColonyScreenState extends State<ColonyScreen> {
               onTap: () {
                 Navigator.pop(sheet);
                 _production();
+              },
+            ),
+          if (run.archives.isNotEmpty)
+            ListTile(
+              leading: const Icon(Icons.inventory_2_outlined),
+              title: const Text('Colony archive'),
+              subtitle: Text('${run.archives.length} completed colonies'),
+              onTap: () {
+                Navigator.pop(sheet);
+                _archive();
               },
             ),
           if (widget.onOpenSettings != null)
@@ -1364,47 +1897,84 @@ class _ColonyScreenState extends State<ColonyScreen> {
 
   void _almanac() => _sheet<void>(
     'Rule Almanac',
-    (_) => Column(
+    (sheet) => Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        for (final rule in run.learnedRules)
+        if (run.compareLastVisit(board.id) case final LandmarkWitness witness)
           ListTile(
             contentPadding: EdgeInsets.zero,
-            title: Text(rule.label),
-            subtitle: Text(rule.explanation),
-            trailing: run.masteredRules.contains(rule)
-                ? const Icon(Icons.verified_outlined, semanticLabel: 'Mastered')
-                : null,
-          ),
-        if (run.learnedFog.isNotEmpty)
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('Fog of war'),
+            leading: const Icon(Icons.compare_arrows, color: Hum.focus),
+            title: const Text('Compare last visit'),
             subtitle: Text(
-              run.learnedFog
-                  .map(
-                    (fog) => switch (fog) {
-                      FogKind.halo => 'Halo',
-                      FogKind.trail => 'Trail',
-                      FogKind.linked => 'Linked torches',
-                      _ => '',
-                    },
-                  )
-                  .join(' · '),
+              witness.workerName.isEmpty
+                  ? witness.visibleResult
+                  : '${witness.workerName} · ${witness.visibleResult}',
             ),
+            onTap: () {
+              Navigator.pop(sheet);
+              _compareLastVisit(witness);
+            },
           ),
-        for (final expedition in campaignBoards.where(
-          (item) => item.expedition && run.clearedBoards.contains(item.id),
+        for (final lesson in ruleLessons.where(
+          (l) =>
+              run.seenLessons.contains(l.id) ||
+              run.learnedRules.any((r) => r.name == l.id) ||
+              run.learnedFog.any((f) => f.name == l.id),
         ))
           ListTile(
             contentPadding: EdgeInsets.zero,
-            title: Text(expedition.title),
-            subtitle: Text(
-              run.almanacCrew(expedition.id).isEmpty
-                  ? 'Expedition cleared'
-                  : 'Crew · ${run.almanacCrew(expedition.id).join(', ')}',
+            title: Text(lesson.title),
+            subtitle: Text(lesson.line),
+            trailing: Icon(
+              run.practicedLessons.contains(lesson.id)
+                  ? Icons.verified_outlined
+                  : Icons.chevron_right,
+              semanticLabel: run.practicedLessons.contains(lesson.id)
+                  ? 'Practiced'
+                  : 'Replay',
             ),
+            onTap: () {
+              Navigator.pop(sheet);
+              _openWorkbook([lesson], spotlight: false);
+            },
           ),
+        for (final expedition in campaignBoards.where(
+          (item) => item.expedition,
+        ))
+          if (run.expeditionState(expedition.id).available ||
+              run.expeditionState(expedition.id).familiarExample ||
+              run.expeditionState(expedition.id).patternEarned)
+            Builder(
+              builder: (_) {
+                final state = run.expeditionState(expedition.id);
+                final installers = state.installerIds.map((id) {
+                  return run.creatures
+                          .where((creature) => creature.id == id)
+                          .firstOrNull
+                          ?.name ??
+                      id;
+                }).toList();
+                return ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(expedition.title),
+                  subtitle: Text(
+                    [
+                      state.patternEarned
+                          ? 'Pattern earned this colony'
+                          : state.familiarExample
+                          ? 'Familiar example · reference only'
+                          : 'Available expedition',
+                      if (state.ornamentInstalled)
+                        installers.isEmpty
+                            ? 'Ornament installed'
+                            : 'Installed by ${installers.join(', ')}',
+                      if (run.almanacCrew(expedition.id).isNotEmpty)
+                        'Field crew · ${run.almanacCrew(expedition.id).join(', ')}',
+                    ].join('\n'),
+                  ),
+                );
+              },
+            ),
       ],
     ),
   );
@@ -1441,10 +2011,173 @@ class _ColonyScreenState extends State<ColonyScreen> {
     ),
   );
 
+  void _archive() => _sheet<void>(
+    'Colony archive',
+    (_) => Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Archived work is read-only. Learned rules and retained companions carry into the active colony.',
+        ),
+        const SizedBox(height: 8),
+        for (var index = run.archives.length - 1; index >= 0; index--)
+          Builder(
+            builder: (_) {
+              final archive = run.archives[index];
+              final routes = (archive['routes'] as List? ?? const [])
+                  .whereType<String>()
+                  .toList();
+              final buildings = (archive['buildings'] as Map? ?? const {});
+              final creatures = (archive['creatures'] as List? ?? const []);
+              final companionId = archive['companion'] as String?;
+              String? contributor;
+              for (final raw in creatures.whereType<Map>()) {
+                if (raw['id'] == companionId) {
+                  contributor = raw['name'] as String?;
+                  break;
+                }
+              }
+              return ColonyArchiveRow(
+                title: 'Colony ${index + 1}',
+                summary:
+                    '${routes.isEmpty ? 'No route dedication' : routes.join(', ')} · ${buildings.length} buildings · +${archive['legacy'] ?? 0} Legacy',
+                contributor: contributor,
+              );
+            },
+          ),
+      ],
+    ),
+  );
+
+  void _compareLastVisit(LandmarkWitness witness) => _sheet<void>(
+    'Compare last visit',
+    (sheet) => Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          witness.workerName.isEmpty
+              ? 'A recorded worker completed this shift last colony.'
+              : '${witness.workerName} completed this shift last colony.',
+          style: const TextStyle(fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(height: 4),
+        Text(witness.visibleResult),
+        const SizedBox(height: 8),
+        Text(
+          'Archived worker ID · ${witness.workerId}',
+          style: const TextStyle(color: Hum.mutedInk),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'This colony earns its own credit only when a present resident performs the matching job.',
+        ),
+        Wrap(
+          spacing: 8,
+          children: [
+            TextButton.icon(
+              onPressed: () {
+                Navigator.pop(sheet);
+                _change(
+                  () => run.setPinnedGoal(
+                    'compare:${witness.boardId}:${witness.eventId}',
+                  ),
+                );
+              },
+              icon: const Icon(Icons.push_pin_outlined),
+              label: const Text('Try a different crew'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(sheet),
+              child: const Text('Close'),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+
+  void _ceremony(String routeId) => _sheet<void>(
+    'Founding dedication',
+    (sheet) => StatefulBuilder(
+      builder: (context, update) {
+        final ceremony = run.finaleCeremony(routeId);
+        final dedication = switch (routeId) {
+          'lines' => 'Open the bridge',
+          'outside' => 'Open the provisions counter',
+          'positions' => 'Mark the crossing lanes',
+          _ => '',
+        };
+        final consequence = switch (routeId) {
+          'lines' =>
+            'The balanced line carries its bound across the palindrome.',
+          'outside' =>
+            'The X-Sum fixes the value that completes the provisions count.',
+          'positions' =>
+            'The knight exclusions leave one position on the long diagonal.',
+          _ => '',
+        };
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(consequence),
+            const SizedBox(height: 8),
+            for (final step in ceremony.steps)
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text(step.summary),
+                subtitle: Text(
+                  ceremony.signedStepIds.contains(step.id)
+                      ? 'Signed off in this colony'
+                      : 'Confirm this step from the visible solve',
+                ),
+                value: ceremony.signedStepIds.contains(step.id),
+                onChanged:
+                    ceremony.ready && !ceremony.signedStepIds.contains(step.id)
+                    ? (_) {
+                        run.signOffDeduction(routeId, step.id);
+                        widget.onChanged();
+                        update(() {});
+                      }
+                    : null,
+              ),
+            if (!ceremony.ready)
+              const Text(
+                'Finish this finale and the Meeting Hall before choosing its dedication.',
+                style: TextStyle(color: Hum.mutedInk),
+              ),
+            if (ceremony.deductionComplete && ceremony.dedication == null)
+              _PrimaryAction(
+                label: dedication,
+                icon: Icons.verified_outlined,
+                onPressed: () {
+                  run.chooseDedication(routeId, dedication);
+                  widget.onChanged();
+                  update(() {});
+                },
+              ),
+            if (ceremony.dedication != null)
+              Semantics(
+                liveRegion: true,
+                child: Text(
+                  '${ceremony.dedication} · dedication recorded',
+                  style: const TextStyle(
+                    color: Hum.focus,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
+    ),
+  );
+
   void _prestige() {
     var quick = false;
     var charter = Charter.standard;
     String? companion = run.companionChoice;
+    bool submitting = false;
+    String? archiveError;
     final upgrades = <LegacyUpgrade, int>{};
     final total = run.legacy + run.prestigePayout;
     final companions = {
@@ -1473,6 +2206,20 @@ class _ColonyScreenState extends State<ColonyScreen> {
           children: [
             Text(
               'Archive this colony and earn ${run.prestigePayout} Legacy. Your Library and learned rules carry forward.',
+            ),
+            const SizedBox(height: 8),
+            Builder(
+              builder: (_) {
+                final quote = run.prestigeQuote(upgrades: upgrades);
+                return Text(
+                  'Earned base and routes · +${quote.payout} Legacy\n'
+                  '${quote.routes.isEmpty ? 'No route dedication recorded' : 'Routes · ${quote.routes.join(', ')}'}\n'
+                  '${quote.charterCredit ? 'New charter credit included\n' : ''}'
+                  'Reset · ${quote.resetDna} DNA / ${quote.resetRna} RNA\n'
+                  'Bank after proposed purchases · ${quote.endingLegacy} Legacy',
+                  style: const TextStyle(color: Hum.mutedInk, height: 1.45),
+                );
+              },
             ),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
@@ -1538,7 +2285,7 @@ class _ColonyScreenState extends State<ColonyScreen> {
                     title: Text(name),
                     subtitle: Text(switch (upgrade) {
                       LegacyUpgrade.shorterRoutes =>
-                        'Rank $selected · ${selected * 10}% faster digit trips',
+                        'Rank $selected · basic 3.0→${(3 * (1 - selected * .1)).toStringAsFixed(1)}s · Chase + niche ${math.max(1.5, 3 * .75 * .88 * (1 - selected * .1)).toStringAsFixed(3)}s',
                       LegacyUpgrade.warmStart => 'An RNA producer after 4×4.',
                       LegacyUpgrade.extraNest =>
                         'One more housing slot after 5×5.',
@@ -1567,25 +2314,68 @@ class _ColonyScreenState extends State<ColonyScreen> {
                   );
                 },
               ),
-            _PrimaryAction(
-              label: 'Archive and begin',
-              icon: Icons.eco_outlined,
-              onPressed: () {
-                _change(() {
-                  final success = run.prestige(
-                    quick: quick,
-                    charter: charter,
-                    companionId: companion,
-                    keepSelectedCompanion: false,
-                    upgrades: upgrades,
-                  );
-                  _result(
-                    success,
-                    'Check your Legacy balance and selected upgrades.',
-                  );
-                  if (success) Navigator.pop(sheet);
-                });
-              },
+            if (LegacyUpgrade.values.every(
+              (upgrade) =>
+                  (run.legacyUpgrades[upgrade] ?? 0) >=
+                  run.legacyUpgradeCosts(upgrade).length,
+            ))
+              Text(
+                'All permanent upgrades owned · ${run.legacy} Legacy banked',
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+            if (archiveError != null)
+              Semantics(
+                liveRegion: true,
+                child: Text(
+                  archiveError!,
+                  style: const TextStyle(color: Hum.error),
+                ),
+              ),
+            FilledButton.icon(
+              icon: const Icon(Icons.eco_outlined),
+              label: Text(submitting ? 'Saving colony…' : 'Archive and begin'),
+              onPressed: submitting
+                  ? null
+                  : () async {
+                      update(() {
+                        submitting = true;
+                        archiveError = null;
+                      });
+                      final quote = run.prestigeQuote(upgrades: upgrades);
+                      final savedUpgrades = Map<LegacyUpgrade, int>.of(
+                        upgrades,
+                      );
+                      final selectedQuick = quick,
+                          selectedCharter = charter,
+                          selectedCompanion = companion;
+                      bool apply(Campaign colony) => colony.prestige(
+                        quick: selectedQuick,
+                        charter: selectedCharter,
+                        companionId: selectedCompanion,
+                        keepSelectedCompanion: false,
+                        upgrades: savedUpgrades,
+                        transactionId: quote.transactionId,
+                      );
+                      final save = widget.onArchive;
+                      final success = save == null
+                          ? apply(run)
+                          : await save(apply);
+                      if (!mounted || !sheet.mounted) return;
+                      if (success) {
+                        Navigator.pop(sheet);
+                        _change(() {});
+                      } else {
+                        update(() {
+                          submitting = false;
+                          archiveError =
+                              'The colony could not be archived. Your current colony is still here. Try again.';
+                        });
+                      }
+                    },
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(sheet),
+              child: const Text('Keep playing'),
             ),
           ],
         ),
@@ -1656,6 +2446,14 @@ class _ColonyManagementScreenState extends State<ColonyManagementScreen> {
       (project) => project.id == 'meeting-hall',
     );
     final projects = run.projects;
+    final postLimit = run.clearedBoards.contains('arrows')
+        ? 4
+        : run.clearedBoards.contains('growth-8')
+        ? 3
+        : village
+        ? 2
+        : 1;
+    final staffedPosts = run.assignments.length;
     final content = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -1686,6 +2484,42 @@ class _ColonyManagementScreenState extends State<ColonyManagementScreen> {
               ),
           ],
         ),
+        if (run.population.communalCapacity > 0) ...[
+          const SizedBox(height: 12),
+          _Panel(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _SectionHeading(
+                  'Village arrivals · ${run.population.communalResidents}/${run.population.communalCapacity}',
+                ),
+                Text(
+                  '${run.population.arrivalCredits} welcome ${run.population.arrivalCredits == 1 ? 'credit' : 'credits'} banked · ${run.population.postLimit} field posts',
+                  style: const TextStyle(color: Hum.mutedInk),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Pause automatic welcomes'),
+                  subtitle: const Text('Credits still bank up to two.'),
+                  value: run.population.arrivalsPaused,
+                  onChanged: (value) =>
+                      _change(() => run.setArrivalsPaused(value)),
+                ),
+                if (run.population.canWelcome)
+                  OutlinedButton.icon(
+                    onPressed: () => _change(() {
+                      final welcomed = run.welcomeResident();
+                      _message = welcomed
+                          ? 'A new resident joined the village.'
+                          : 'No free communal bed or welcome credit.';
+                    }),
+                    icon: const Icon(Icons.person_add_alt_1_outlined),
+                    label: const Text('Welcome resident'),
+                  ),
+              ],
+            ),
+          ),
+        ],
         if (run.creatures.isEmpty)
           const Padding(
             padding: EdgeInsets.only(top: 12),
@@ -1700,7 +2534,11 @@ class _ColonyManagementScreenState extends State<ColonyManagementScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 _SectionHeading(
-                  'Workers · ${run.creatures.length}/${run.housing} housed',
+                  'Field posts · $staffedPosts/$postLimit staffed',
+                ),
+                Text(
+                  '${run.creatures.length}/${run.housing} housed · unassigned residents remain flexible.',
+                  style: const TextStyle(color: Hum.mutedInk),
                 ),
                 for (final creature in run.creatures)
                   ListTile(
@@ -1711,7 +2549,9 @@ class _ColonyManagementScreenState extends State<ColonyManagementScreen> {
                       reducedMotion: MediaQuery.disableAnimationsOf(context),
                     ),
                     title: Text(creature.name),
-                    subtitle: Text('Favorite ${creature.favorite}'),
+                    subtitle: Text(
+                      'Favorite ${creature.favorite} · ${_jobName(run.assignments[creature.id])}',
+                    ),
                     onTap: widget.onOpenProfile == null
                         ? null
                         : () => widget.onOpenProfile!(creature),
@@ -1775,16 +2615,48 @@ class _ColonyManagementScreenState extends State<ColonyManagementScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const _SectionHeading('Construction'),
+                if (run.pinnedGoal case final String goal)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: ProjectPinBanner(
+                      label:
+                          projects
+                              .where((project) => project.id == goal)
+                              .map((project) => project.name)
+                              .firstOrNull ??
+                          goal,
+                      detail: projects.any((project) => project.id == goal)
+                          ? _projectStatus(
+                              projects.firstWhere(
+                                (project) => project.id == goal,
+                              ),
+                            )
+                          : 'Goal saved for this colony',
+                      onClear: () => _change(() => run.setPinnedGoal(null)),
+                    ),
+                  ),
                 for (final project in projects)
                   ExpansionTile(
                     tilePadding: EdgeInsets.zero,
                     title: Text(project.name),
-                    subtitle: Text(
-                      run.buildings.contains(project.id)
-                          ? 'Built'
-                          : 'Gather letter pieces',
-                    ),
+                    subtitle: Text(_projectStatus(project)),
                     children: [
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          onPressed: run.pinnedGoal == project.id
+                              ? null
+                              : () => _change(
+                                  () => run.setPinnedGoal(project.id),
+                                ),
+                          icon: const Icon(Icons.push_pin_outlined),
+                          label: Text(
+                            run.pinnedGoal == project.id
+                                ? 'Goal pinned'
+                                : 'Pin this project',
+                          ),
+                        ),
+                      ),
                       if (run.buildings.contains(project.id))
                         SettlementProjectPreview(
                           glyphs: run.buildingGlyphs[project.id]!,
@@ -1851,21 +2723,136 @@ class _ColonyManagementScreenState extends State<ColonyManagementScreen> {
                       if (!run.buildings.contains(project.id))
                         Align(
                           alignment: Alignment.centerLeft,
-                          child: _PrimaryAction(
-                            label: 'Build ${project.name}',
-                            icon: Icons.handyman_outlined,
-                            onPressed: run.canBuild(project.id)
-                                ? () => _change(() {
-                                    final accepted = run.build(project.id);
-                                    _message = accepted
-                                        ? '${project.name} is built.'
-                                        : 'Gather the remaining materials.';
-                                  })
-                                : null,
+                          child: Builder(
+                            builder: (_) {
+                              final work = run.constructionFor(project.id);
+                              return Wrap(
+                                spacing: 8,
+                                children: [
+                                  _PrimaryAction(
+                                    label: work == null
+                                        ? 'Start ${project.name}'
+                                        : work.paused
+                                        ? 'Resume ${project.name}'
+                                        : 'Pause ${project.name}',
+                                    icon: work?.paused == true
+                                        ? Icons.play_arrow
+                                        : work == null
+                                        ? Icons.handyman_outlined
+                                        : Icons.pause,
+                                    onPressed: work == null
+                                        ? run.canBuild(project.id)
+                                              ? () => _change(() {
+                                                  final accepted = run
+                                                      .startConstruction(
+                                                        project.id,
+                                                      );
+                                                  _message = accepted
+                                                      ? '${project.name} work started.'
+                                                      : 'Gather the remaining materials.';
+                                                })
+                                              : null
+                                        : () => _change(() {
+                                            final wasPaused = work.paused;
+                                            final accepted = wasPaused
+                                                ? run.resumeConstruction(
+                                                    project.id,
+                                                  )
+                                                : run.pauseConstruction(
+                                                    project.id,
+                                                  );
+                                            _message = accepted
+                                                ? wasPaused
+                                                      ? '${project.name} work resumed.'
+                                                      : '${project.name} work paused safely.'
+                                                : 'The work state changed.';
+                                          }),
+                                  ),
+                                  if (work != null && work.installedCount == 0)
+                                    TextButton(
+                                      onPressed: () => _change(() {
+                                        final released = run.cancelConstruction(
+                                          project.id,
+                                        );
+                                        _message = released
+                                            ? 'Reserved pieces returned to stock.'
+                                            : 'Installed work cannot be released.';
+                                      }),
+                                      child: const Text('Release pieces'),
+                                    ),
+                                ],
+                              );
+                            },
                           ),
                         ),
                     ],
                   ),
+              ],
+            ),
+          ),
+        ],
+        if (run.clearedBoards.contains('growth-6')) ...[
+          const SizedBox(height: 12),
+          _Panel(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const _SectionHeading('Settlement orders'),
+                const Text(
+                  'Saved, untimed work. Each completed order unlocks one editable crew preset.',
+                  style: TextStyle(color: Hum.mutedInk),
+                ),
+                for (final order in SettlementOrder.values)
+                  if (_orderUnlocked(order))
+                    Builder(
+                      builder: (_) {
+                        final progress = run.orderProgress(order);
+                        final preset = run.presets[progress.rewardPresetId];
+                        return ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(_orderIcon(order), color: Hum.focus),
+                          title: Text(_orderName(order)),
+                          subtitle: Text(
+                            progress.completed
+                                ? 'Complete · ${preset?.name ?? 'crew preset'} ready'
+                                : progress.accepted
+                                ? '${progress.steps.intersection(progress.requiredSteps).length}/${progress.requiredSteps.length} steps confirmed'
+                                : _orderObjective(order),
+                          ),
+                          trailing: progress.completed
+                              ? TextButton(
+                                  onPressed: preset == null
+                                      ? null
+                                      : () => _change(() {
+                                          final recalled = run.recallPreset(
+                                            preset.id,
+                                          );
+                                          _message = recalled
+                                              ? '${preset.name} crew recalled.'
+                                              : 'That preset is unavailable.';
+                                        }),
+                                  child: const Text('Recall'),
+                                )
+                              : TextButton(
+                                  onPressed: progress.accepted
+                                      ? null
+                                      : () => _change(() {
+                                          final accepted = run.acceptOrder(
+                                            order,
+                                          );
+                                          _message = accepted
+                                              ? '${_orderName(order)} accepted.'
+                                              : 'This order is still locked.';
+                                        }),
+                                  child: Text(
+                                    progress.accepted
+                                        ? 'In progress'
+                                        : 'Accept',
+                                  ),
+                                ),
+                        );
+                      },
+                    ),
               ],
             ),
           ),
@@ -1969,6 +2956,44 @@ class _ColonyManagementScreenState extends State<ColonyManagementScreen> {
 
   int get boardSize => run.board.size;
 
+  String _projectStatus(ProjectSpec project) {
+    final progress = run.projectProgress(project.id);
+    if (progress.complete) return 'Built';
+    int total(Map<MaterialRole, int> values) =>
+        values.values.fold(0, (sum, value) => sum + value);
+    final required = total(progress.requirements);
+    final installed = total(progress.installed);
+    final traveling = total(progress.inTransit);
+    final reserved = total(progress.reserved);
+    final cut = total(progress.cutStock);
+    return '$installed/$required installed · $cut cut · $traveling in transit · $reserved reserved${progress.paused ? ' · paused' : ''}';
+  }
+
+  bool _orderUnlocked(SettlementOrder order) => switch (order) {
+    SettlementOrder.supply => run.clearedBoards.contains('growth-6'),
+    SettlementOrder.build => run.clearedBoards.contains('growth-8'),
+    SettlementOrder.lanterns => run.clearedBoards.contains('halo'),
+  };
+
+  String _orderName(SettlementOrder order) => switch (order) {
+    SettlementOrder.supply => 'Supply',
+    SettlementOrder.build => 'Build',
+    SettlementOrder.lanterns => 'Lanterns',
+  };
+
+  String _orderObjective(SettlementOrder order) => switch (order) {
+    SettlementOrder.supply => 'Place worker-delivered copies of two values.',
+    SettlementOrder.build => 'Fit a beam and fulfill a digit request.',
+    SettlementOrder.lanterns =>
+      'Light a patch, switch priority and deliver a digit.',
+  };
+
+  IconData _orderIcon(SettlementOrder order) => switch (order) {
+    SettlementOrder.supply => Icons.local_shipping_outlined,
+    SettlementOrder.build => Icons.handyman_outlined,
+    SettlementOrder.lanterns => Icons.light_mode_outlined,
+  };
+
   String _jobName(TaskKind? task) => switch (task?.name) {
     'digit' => 'Digit deliveries',
     'torch' => 'Torch deliveries',
@@ -2017,6 +3042,33 @@ class _ProductionPanelState extends State<_ProductionPanel> {
           Text(
             '${producer.digit} produces ${producer.rank} ${producer.type.name.toUpperCase()} every ${producer.type.name == 'rna' ? 10 : 40} seconds.',
           ),
+        if (run.productionBatch case final ProductionBatchState batch) ...[
+          const SizedBox(height: 8),
+          Text(
+            batch.settled
+                ? 'Batch from ${batch.openedBy} settled'
+                : 'Batch from ${batch.openedBy}',
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+          for (final producer in run.producers.values)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: LinearProgressIndicator(
+                value: (batch.cycleCaps[producer.digit] ?? 1) == 0
+                    ? 1
+                    : (batch.deliveredCycles[producer.digit] ?? 0) /
+                          (batch.cycleCaps[producer.digit] ?? 1),
+                semanticsLabel:
+                    '${producer.digit} produces ${producer.type.name.toUpperCase()}, ${batch.deliveredCycles[producer.digit] ?? 0} of ${batch.cycleCaps[producer.digit] ?? 0} deliveries complete',
+                color: Hum.focus,
+                backgroundColor: Hum.cyan,
+              ),
+            ),
+          const Text(
+            'The next distinct authored first clear settles this batch and opens one more.',
+            style: TextStyle(color: Hum.mutedInk),
+          ),
+        ],
         if (run.producerLimit > 0) ...[
           const SizedBox(height: 8),
           DropdownButtonFormField<int>(

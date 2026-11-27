@@ -7,7 +7,26 @@ import 'package:flutter/services.dart';
 
 import 'creatures.dart';
 
-enum CreaturePose { idle, travel, carry, cheer, puzzled }
+/// Contact-preserving procedural poses shared by the hatch preview and colony.
+/// `travel` remains as the legacy alias used by existing screens.
+enum CreaturePose {
+  idle,
+  travel,
+  walk,
+  run,
+  crouch,
+  carry,
+  poke,
+  recoil,
+  plant,
+  tussle,
+  returnHome,
+  sleep,
+  work,
+  torch,
+  cheer,
+  puzzled,
+}
 
 class CreatureSprite extends StatelessWidget {
   const CreatureSprite({
@@ -150,8 +169,17 @@ class _CreaturePainter extends CustomPainter {
     }
 
     final wave = math.sin(phase * math.pi * 2);
-    final moving = pose == CreaturePose.travel || pose == CreaturePose.carry;
+    final moving = const {
+      CreaturePose.travel,
+      CreaturePose.walk,
+      CreaturePose.run,
+      CreaturePose.carry,
+      CreaturePose.returnHome,
+      CreaturePose.tussle,
+    }.contains(pose);
     final cheering = pose == CreaturePose.cheer;
+    final sleeping = pose == CreaturePose.sleep;
+    final crouching = pose == CreaturePose.crouch || pose == CreaturePose.plant;
     final hovering = parts.contains('hover');
     final slime = parts.contains('slime');
     final dims = switch (parts.firstWhere(
@@ -165,12 +193,14 @@ class _CreaturePainter extends CustomPainter {
       'lobes' => (22, 14),
       _ => (18, 16),
     };
-    final stretch = slime && moving ? (wave * 2).round() : 0;
+    final speed = pose == CreaturePose.run ? 1.6 : 1.0;
+    final stretch = slime && moving ? (wave * 2 * speed).round() : 0;
     final w = dims.$1 + stretch;
     final h = dims.$2 - stretch;
     final x = 18 - w ~/ 2;
     final bottom =
-        27 -
+        27 +
+        (crouching ? 2 : 0) -
         (hovering
             ? 4 + wave.round()
             : cheering
@@ -193,17 +223,20 @@ class _CreaturePainter extends CustomPainter {
     };
     for (var i = 0; i < legs; i++) {
       final foot = x + 2 + i * (w - 6) ~/ math.max(1, legs - 1);
-      final stride = moving
-          ? (math.sin(phase * 2 * math.pi + math.pi * (i % 2)) *
-                    (legs > 4 ? 1 : 2))
-                .round()
-          : 0;
+      final gaitPhase = legs > 4
+          ? math.pi * 2 * (i % 3) / 3
+          : legs == 4
+          ? math.pi * (i ~/ 2)
+          : math.pi * (i % 2);
+      final step = math.sin(phase * 2 * math.pi + gaitPhase);
+      final stride = moving ? (step * (legs > 4 ? 1 : 2) * speed).round() : 0;
+      final lift = moving ? math.max(0, -step).round() : 0;
       final footColor = parts.contains('clear-paws')
           ? light.withAlpha(130)
           : shadow;
-      box(foot, bottom - 2, 2, 4, ink);
-      box(foot + stride, bottom + 1 - stride.abs(), 3, 2, footColor);
-      box(foot + stride, bottom + 3 - stride.abs(), 3, 1, ink);
+      box(foot, bottom - 2, 2, math.max(2, 4 - lift), ink);
+      box(foot + stride, bottom + 1 - lift, 3, 2, footColor);
+      box(foot + stride, bottom + 3 - lift, 3, 1, ink);
       if (parts.contains('ankle-ears') && i == 0) {
         box(foot - 1, bottom - 2, 2, 3, light);
       }
@@ -284,7 +317,7 @@ class _CreaturePainter extends CustomPainter {
         box(x + 5, bottom - 7, 2, 2, light);
     }
 
-    final puzzled = pose == CreaturePose.puzzled;
+    final puzzled = pose == CreaturePose.puzzled || pose == CreaturePose.poke;
     final expression = creature.personality;
     final eyeY = y + 3 + (parts.contains('head-bob') ? wave.round() : 0);
     final stalks = parts.contains('stalks');
@@ -300,7 +333,7 @@ class _CreaturePainter extends CustomPainter {
       } else {
         final peek = expression == Personality.curious && puzzled;
         final lid = eyeY + (peek && i.isOdd ? wave.round() : 0);
-        final blink = phase > 0.93;
+        final blink = sleeping || phase > 0.93;
         if (blink) {
           box(eye - 1, lid + 2, 3, 1, ink);
         } else {
@@ -369,8 +402,39 @@ class _CreaturePainter extends CustomPainter {
     if (parts.contains('side-flap'))
       box(x - 1, y + 4 + wave.round(), 3, 2, light);
 
-    final carrying = pose == CreaturePose.carry;
-    final torch = cargo == '☀' || cargo == '♨';
+    // Life decisions remain legible at sprite scale. Each response owns a
+    // stable attachment, even when several responses compose on one body.
+    for (final choice
+        in creature.recipe.ecologyPath?.decisions.values ??
+            const <EcologyChoice>[]) {
+      final slot = choice.index % 4;
+      final ax = x + 2 + slot * math.max(2, (w - 7) ~/ 3);
+      final ay = y - 2 - choice.family.index;
+      switch (choice.index % 4) {
+        case 0:
+          box(ax, ay, 4, 2, ink);
+          box(ax + 1, ay, 2, 1, light);
+        case 1:
+          box(ax, ay - 1, 2, 3, ink);
+          box(ax + 3, ay - 1, 2, 3, ink);
+          box(ax + 1, ay, 3, 1, light);
+        case 2:
+          box(ax, ay, 5, 1, ink);
+          box(ax + 2, ay - 2, 1, 4, light);
+        case 3:
+          box(ax, ay - 1, 4, 3, ink);
+          box(ax + 1, ay, 2, 1, light);
+      }
+    }
+    if (parts.contains('crown-brace')) box(x + 2, y - 6, w - 5, 2, shadow);
+    if (parts.contains('lit-gills'))
+      box(x + 3, y + 2, w - 7, 2, const Color(0xffffcc60));
+    if (parts.contains('free-forelimbs')) box(end - 1, y + 4, 5, 2, light);
+    if (parts.contains('backward-hand')) box(x - 4, y + 3, 4, 2, light);
+    if (parts.contains('knee-mouth')) box(x + 2, bottom - 4, 3, 2, ink);
+
+    final carrying = pose == CreaturePose.carry || pose == CreaturePose.torch;
+    final torch = pose == CreaturePose.torch || cargo == '☀' || cargo == '♨';
     final mount = parts.firstWhere(
       (part) =>
           growthById[part]?.group ==
@@ -505,6 +569,21 @@ class _CreaturePainter extends CustomPainter {
           }
       }
     }
+    if (pose == CreaturePose.recoil) {
+      box(x - 2, y + 2, 2, 1, ink);
+      box(x - 4, y, 1, 1, ink);
+      box(x - 3, y + 4, 1, 1, ink);
+    }
+    if (pose == CreaturePose.work || pose == CreaturePose.plant) {
+      final tap = (phase * 6).floor().isEven ? 0 : 2;
+      box(end - 1 + tap, bottom - 4, 4, 2, ink);
+      box(end + tap, bottom - 5, 2, 3, light);
+    }
+    if (pose == CreaturePose.tussle) {
+      final puff = (wave.abs() * 2).round();
+      box(x - 3 - puff, y - 2, 2, 2, light);
+      box(end + 2 + puff, y, 2, 2, light);
+    }
     canvas.restore();
   }
 
@@ -555,6 +634,62 @@ class CreatureCreatorScreen extends StatefulWidget {
   State<CreatureCreatorScreen> createState() => _CreatureCreatorScreenState();
 }
 
+/// Phase 2 entry point. It intentionally delegates commit/idempotency to the
+/// established creator while starting from the guided ecology graph.
+class EcologyCreatureCreatorScreen extends StatelessWidget {
+  const EcologyCreatureCreatorScreen({
+    super.key,
+    required this.milestone,
+    required this.quote,
+    required this.onHatch,
+    required this.dna,
+    required this.rna,
+    required this.occupied,
+    required this.housing,
+    this.oneHelper = false,
+    this.reducedMotion = false,
+    this.initialDraft,
+    this.initialRecipe,
+    this.onDraftChanged,
+  });
+
+  final GrowthMilestone milestone;
+  final HatchPrice Function(int responseCount) quote;
+  final Creature? Function(String, CreatureRecipe, HatchPrice) onHatch;
+  final int dna;
+  final int rna;
+  final int occupied;
+  final int housing;
+  final bool oneHelper;
+  final bool reducedMotion;
+  final CreatureDraft? initialDraft;
+  final CreatureRecipe? initialRecipe;
+  final ValueChanged<CreatureDraft?>? onDraftChanged;
+
+  @override
+  Widget build(BuildContext context) => CreatureCreatorScreen(
+    milestone: milestone,
+    quote: quote,
+    onHatch: onHatch,
+    dna: dna,
+    rna: rna,
+    occupied: occupied,
+    housing: housing,
+    oneHelper: oneHelper,
+    reducedMotion: reducedMotion,
+    initialDraft: initialDraft,
+    initialRecipe: initialDraft == null
+        ? initialRecipe ??
+              CreatureRecipe.ecology(
+                founder: CreatureFounder.plant,
+                nicheId: 'plant.brace',
+                firstDecision: EcologyChoice.chase,
+              )
+        : null,
+    onDraftChanged: onDraftChanged,
+  );
+}
+
 class _CreatureCreatorScreenState extends State<CreatureCreatorScreen> {
   late CreatureRecipe _recipe =
       widget.initialDraft?.recipe ??
@@ -594,7 +729,7 @@ class _CreatureCreatorScreenState extends State<CreatureCreatorScreen> {
   }
 
   void _hatch(HatchPrice quoted) {
-    final current = widget.quote(_recipe.perks.length);
+    final current = widget.quote(_responseCount);
     if (current != quoted) {
       setState(
         () => _message =
@@ -618,7 +753,7 @@ class _CreatureCreatorScreenState extends State<CreatureCreatorScreen> {
   Widget build(BuildContext context) {
     final preview = Creature.preview(_recipe, widget.milestone);
     final errors = _recipe.validate(widget.milestone);
-    final quote = widget.quote(_recipe.perks.length);
+    final quote = widget.quote(_responseCount);
     final perkLimit = CreatureRecipe.perkLimit(widget.milestone);
     final availability = [
       if (widget.oneHelper) 'One Helper closes the hatchery.',
@@ -672,64 +807,89 @@ class _CreatureCreatorScreenState extends State<CreatureCreatorScreen> {
           const SizedBox(height: 12),
           if (_reviewing) ...[
             Text(
-              'Growth paths',
+              _recipe.ecologyPath == null ? 'Growth paths' : 'Life path',
               style: Theme.of(context).textTheme.titleMedium,
             ),
-            for (final group in GrowthGroup.values)
-              if (growthById[_recipe.choices[group]] case final GrowthNode node)
-                Text('${group.label} · ${node.label}'),
+            if (_recipe.ecologyPath case final EcologyPath path) ...[
+              Text('Founder · ${path.founder.label}'),
+              if (path.niche case final EcologyNiche niche)
+                Text('Habitat · ${niche.label}'),
+              for (final family in DecisionFamily.values)
+                if (path.decisions[family] case final EcologyChoice choice)
+                  Text('${family.question} · ${choice.label}'),
+              if (path.secretId case final String secretId)
+                Text(
+                  'Discovery · ${ecologySecretById(secretId)?.label ?? secretId}',
+                ),
+            ] else
+              for (final group in GrowthGroup.values)
+                if (growthById[_recipe.choices[group]]
+                    case final GrowthNode node)
+                  Text('${group.label} · ${node.label}'),
             const SizedBox(height: 8),
-            Text('Work perks', style: Theme.of(context).textTheme.titleMedium),
-            for (final perk in _recipe.perks) Text(perk.label),
+            Text(
+              _recipe.ecologyPath == null
+                  ? 'Work perks'
+                  : 'Demonstrated skills',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            if (_recipe.ecologyPath case final EcologyPath path)
+              for (final choice in path.decisions.values) Text(choice.effect)
+            else
+              for (final perk in _recipe.perks) Text(perk.label),
             const SizedBox(height: 12),
             OutlinedButton(
               onPressed: () => _review(false),
               child: const Text('Edit growth paths'),
             ),
           ] else ...[
-            for (final group in GrowthGroup.values) _path(group),
-            const SizedBox(height: 12),
-            Text(
-              'Work perks (${_recipe.perks.length}/$perkLimit)',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            for (final perk in WorkPerk.values)
-              if (perk.milestone.index <= widget.milestone.index ||
-                  _recipe.perks.contains(perk))
-                CheckboxListTile(
-                  controlAffinity: ListTileControlAffinity.leading,
-                  contentPadding: EdgeInsets.zero,
-                  title: Text(perk.label),
-                  subtitle: Text(
-                    perk.milestone.index > widget.milestone.index
-                        ? 'Unlocks at ${_milestoneLabel(perk.milestone)}'
-                        : perk.description,
-                  ),
-                  value: _recipe.perks.contains(perk),
-                  onChanged:
-                      _recipe.perks.contains(perk) ||
-                          perk.milestone.index <= widget.milestone.index
-                      ? (add) {
-                          final current = [..._recipe.perks];
-                          if (add == false) {
-                            current.remove(perk);
-                          } else if (perkLimit == 1) {
-                            current
-                              ..clear()
-                              ..add(perk);
-                          } else if (current.length < perkLimit) {
-                            current.add(perk);
-                          } else {
-                            setState(
-                              () =>
-                                  _message = 'Remove a work perk to make room.',
-                            );
-                            return;
+            if (_recipe.ecologyPath case final EcologyPath path)
+              ..._ecologyEditor(path)
+            else ...[
+              for (final group in GrowthGroup.values) _path(group),
+              const SizedBox(height: 12),
+              Text(
+                'Work perks (${_recipe.perks.length}/$perkLimit)',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              for (final perk in WorkPerk.values)
+                if (perk.milestone.index <= widget.milestone.index ||
+                    _recipe.perks.contains(perk))
+                  CheckboxListTile(
+                    controlAffinity: ListTileControlAffinity.leading,
+                    contentPadding: EdgeInsets.zero,
+                    title: Text(perk.label),
+                    subtitle: Text(
+                      perk.milestone.index > widget.milestone.index
+                          ? 'Unlocks at ${_milestoneLabel(perk.milestone)}'
+                          : perk.description,
+                    ),
+                    value: _recipe.perks.contains(perk),
+                    onChanged:
+                        _recipe.perks.contains(perk) ||
+                            perk.milestone.index <= widget.milestone.index
+                        ? (add) {
+                            final current = [..._recipe.perks];
+                            if (add == false) {
+                              current.remove(perk);
+                            } else if (perkLimit == 1) {
+                              current
+                                ..clear()
+                                ..add(perk);
+                            } else if (current.length < perkLimit) {
+                              current.add(perk);
+                            } else {
+                              setState(
+                                () => _message =
+                                    'Remove a work perk to make room.',
+                              );
+                              return;
+                            }
+                            _change(_recipe.withPerks(current));
                           }
-                          _change(_recipe.withPerks(current));
-                        }
-                      : null,
-                ),
+                        : null,
+                  ),
+            ],
           ],
           const Divider(height: 24),
           Text(
@@ -767,6 +927,126 @@ class _CreatureCreatorScreenState extends State<CreatureCreatorScreen> {
         ],
       ),
     );
+  }
+
+  int get _responseCount =>
+      _recipe.ecologyPath?.responseCount ?? _recipe.perks.length;
+
+  List<Widget> _ecologyEditor(EcologyPath path) {
+    final cap = ecologyDecisionCap(widget.milestone);
+    return [
+      Text('Choose a lineage', style: Theme.of(context).textTheme.titleMedium),
+      const SizedBox(height: 4),
+      Wrap(
+        spacing: 8,
+        runSpacing: 4,
+        children: [
+          for (final founder in CreatureFounder.values)
+            ChoiceChip(
+              label: Text(founder.label),
+              selected: path.founder == founder,
+              onSelected: (_) {
+                final niche = ecologyNiches.firstWhere(
+                  (item) => item.founder == founder,
+                );
+                _change(
+                  CreatureRecipe.ecology(
+                    founder: founder,
+                    nicheId: niche.id,
+                    firstDecision: EcologyChoice.chase,
+                  ),
+                  pose: CreaturePose.walk,
+                );
+              },
+            ),
+        ],
+      ),
+      const SizedBox(height: 12),
+      Text(
+        path.niche?.question ?? 'Choose a habitat',
+        style: Theme.of(context).textTheme.titleMedium,
+      ),
+      RadioGroup<String>(
+        groupValue: path.nicheId,
+        onChanged: (id) {
+          if (id == null) return;
+          _change(
+            _recipe.withEcologyPath(
+              EcologyPath(
+                founder: path.founder,
+                nicheId: id,
+                decisions: path.decisions,
+                witnessedEvents: path.witnessedEvents,
+              ),
+            ),
+            pose: CreaturePose.walk,
+          );
+        },
+        child: Column(
+          children: [
+            for (final niche in ecologyNiches.where(
+              (item) => item.founder == path.founder,
+            ))
+              RadioListTile<String>(
+                contentPadding: EdgeInsets.zero,
+                value: niche.id,
+                title: Text(niche.label),
+                subtitle: Text(niche.effect),
+              ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 8),
+      Text(
+        'Life decisions (${path.responseCount}/$cap)',
+        style: Theme.of(context).textTheme.titleMedium,
+      ),
+      for (final family in DecisionFamily.values)
+        if (path.availableChoices(widget.milestone, family).isNotEmpty &&
+            (path.decisions.containsKey(family) || path.responseCount < cap))
+          ExpansionTile(
+            key: PageStorageKey('ecology-${family.name}'),
+            initiallyExpanded: family == DecisionFamily.digit,
+            tilePadding: EdgeInsets.zero,
+            title: Text(family.question),
+            subtitle: path.decisions[family] == null
+                ? const Text('Leave open for nurture')
+                : Text(path.decisions[family]!.label),
+            children: [
+              RadioGroup<EcologyChoice>(
+                groupValue: path.decisions[family],
+                onChanged: (choice) {
+                  if (choice == null) return;
+                  _change(
+                    _recipe.withEcologyPath(path.choose(choice)),
+                    pose: switch (family) {
+                      DecisionFamily.digit => CreaturePose.run,
+                      DecisionFamily.roof => CreaturePose.work,
+                      DecisionFamily.light => CreaturePose.torch,
+                      DecisionFamily.coordination => CreaturePose.poke,
+                    },
+                  );
+                },
+                child: Column(
+                  children: [
+                    for (final choice in path.availableChoices(
+                      widget.milestone,
+                      family,
+                    ))
+                      RadioListTile<EcologyChoice>(
+                        contentPadding: const EdgeInsetsDirectional.only(
+                          start: 4,
+                        ),
+                        value: choice,
+                        title: Text(choice.label),
+                        subtitle: Text(choice.effect),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+    ];
   }
 
   String get _previewCargo => _recipe.choices.containsKey(GrowthGroup.torch)
@@ -910,6 +1190,11 @@ class CreatureProfileScreen extends StatefulWidget {
     required this.onChanged,
     this.onEncourage,
     this.onEditRecipe,
+    this.nurtureChoices = const [],
+    this.discoveryChoices = const [],
+    this.ecologyMilestone,
+    this.onNurture,
+    this.onDiscover,
     this.suggestedDigit,
     this.reducedMotion = false,
     this.roaming = const CreatureRoaming(),
@@ -921,6 +1206,11 @@ class CreatureProfileScreen extends StatefulWidget {
   final VoidCallback onChanged;
   final bool Function()? onEncourage;
   final VoidCallback? onEditRecipe;
+  final List<EcologyChoice> nurtureChoices;
+  final List<EcologySecret> discoveryChoices;
+  final GrowthMilestone? ecologyMilestone;
+  final bool Function(EcologyChoice)? onNurture;
+  final bool Function(String)? onDiscover;
   final int? suggestedDigit;
   final bool reducedMotion;
   final CreatureRoaming roaming;
@@ -942,6 +1232,21 @@ class _CreatureProfileScreenState extends State<CreatureProfileScreen>
   Creature get _creature => widget.creature;
   CompanionMemory get _memory => _creature.memory;
   bool get _android => Theme.of(context).platform == TargetPlatform.android;
+  List<EcologyChoice> get _nurtureChoices => widget.ecologyMilestone == null
+      ? widget.nurtureChoices
+      : [
+          for (final choice in EcologyChoice.values)
+            if (_creature.canNurture(choice, widget.ecologyMilestone!)) choice,
+        ];
+  List<EcologySecret> get _discoveryChoices {
+    final path = _creature.recipe.ecologyPath;
+    if (widget.ecologyMilestone == null) return widget.discoveryChoices;
+    if (path == null || path.secretId != null) return const [];
+    return [
+      for (final secret in ecologySecrets)
+        if (secret.matches(path)) secret,
+    ];
+  }
 
   @override
   void initState() {
@@ -1135,6 +1440,68 @@ class _CreatureProfileScreenState extends State<CreatureProfileScreen>
               ),
           ],
         ),
+        if (_creature.recipe.ecologyPath case final EcologyPath path) ...[
+          const Divider(height: 24),
+          Text('Life path', style: Theme.of(context).textTheme.titleMedium),
+          Text('${path.founder.label} · ${path.niche?.label ?? path.nicheId}'),
+          for (final family in DecisionFamily.values)
+            if (path.decisions[family] case final EcologyChoice choice)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                title: Text(choice.label),
+                subtitle: Text(choice.effect),
+              ),
+          if (path.secretId case final String secretId)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.auto_awesome_outlined),
+              title: Text(ecologySecretById(secretId)?.label ?? secretId),
+              subtitle: const Text('Discovered identity'),
+            ),
+          if (_nurtureChoices.isNotEmpty && widget.onNurture != null) ...[
+            Text(
+              'Nurture · 1 DNA / 2 RNA',
+              style: Theme.of(context).textTheme.labelLarge,
+            ),
+            for (final choice in _nurtureChoices)
+              OutlinedButton(
+                onPressed: () {
+                  final nurtured = widget.onNurture!(choice);
+                  setState(
+                    () => _notice = nurtured
+                        ? '${_creature.name} expressed ${choice.label}.'
+                        : 'This response is unavailable or the colony needs 1 DNA and 2 RNA.',
+                  );
+                  if (nurtured) widget.onChanged();
+                },
+                child: Text('${choice.label} · ${choice.effect}'),
+              ),
+          ],
+          for (final secret in ecologySecrets)
+            if (path.witnessedEvents.contains(secret.eventId))
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.visibility_outlined),
+                title: Text(secret.clue),
+                subtitle: const Text('Witnessed in this colony'),
+              ),
+          if (_discoveryChoices.isNotEmpty && widget.onDiscover != null)
+            for (final secret in _discoveryChoices)
+              FilledButton.tonalIcon(
+                onPressed: () {
+                  final discovered = widget.onDiscover!(secret.id);
+                  setState(
+                    () => _notice = discovered
+                        ? '${_creature.name} discovered ${secret.label}.'
+                        : 'The witnessed clue and life decisions do not match yet.',
+                  );
+                  if (discovered) widget.onChanged();
+                },
+                icon: const Icon(Icons.auto_awesome),
+                label: Text('Discover ${secret.label}'),
+              ),
+        ],
         SwitchListTile(
           title: const Text('Keep as companion'),
           subtitle: const Text('Bring this creature into your next colony.'),

@@ -109,6 +109,7 @@ class LibraryTransport {
           for (final name in [
             HttpHeaders.retryAfterHeader,
             HttpHeaders.contentTypeHeader,
+            HttpHeaders.locationHeader,
           ])
             if (response.headers.value(name) case final value?) name: value,
         },
@@ -286,12 +287,12 @@ LibraryDetail parseLibraryDetail(
   final difficulty = _difficulty(
     stats['difficulty:'] ?? stats['schwierigkeit:'],
   );
-  final content = body
-      .querySelectorAll('a[href]')
-      .map((a) => _link(uri, a))
-      .nonNulls
-      .where(isLibraryPayloadLink)
-      .firstOrNull;
+  final content = _rankPlayerLinks(
+    body,
+    uri,
+    _string(title),
+    original.author,
+  ).firstOrNull;
   final diagram = body
       .querySelectorAll('img[src]')
       .map((image) => _link(uri, image, 'src'))
@@ -376,14 +377,73 @@ bool isLibraryPayloadLink(Uri uri) =>
     switch (uri.host) {
       'sudokupad.app' ||
       'www.sudokupad.app' ||
+      'app.crackingthecryptic.com' ||
       'app.crackingthecryptic.tv' ||
       'sudokupad.svencodes.com' =>
         uri.pathSegments.isNotEmpty ||
             uri.queryParameters.containsKey('puzzleid'),
-      'f-puzzles.com' ||
-      'www.f-puzzles.com' => uri.queryParameters.containsKey('load'),
+      'f-puzzles.com' || 'www.f-puzzles.com' =>
+        uri.queryParameters.containsKey('load') ||
+            uri.queryParameters.containsKey('id'),
+      'tinyurl.com' || 'www.tinyurl.com' => uri.pathSegments.length == 1,
       _ => false,
     };
+
+/// Returns author player links in evidence order rather than DOM order.
+///
+/// Portal posts often cite an earlier puzzle before linking the current one.
+/// Keeping this policy here also makes manual and automatic acquisition use the
+/// same identity evidence.
+List<Uri> _rankPlayerLinks(
+  Element body,
+  Uri base,
+  String title,
+  String author,
+) {
+  final normalizedTitle = _identityText(title);
+  final normalizedAuthor = _identityText(author);
+  final ranked = <(int, int, Uri)>[];
+  for (final (order, anchor) in body.querySelectorAll('a[href]').indexed) {
+    final target = _link(base, anchor);
+    if (target == null || !isLibraryPayloadLink(target)) continue;
+    final label = _identityText(_string(anchor));
+    final context = _identityText(_string(anchor.parent));
+    var score = 0;
+    if (RegExp(r'\b(play|solve|sudoku ?pad|f puzzles?)\b').hasMatch(label)) {
+      score += 30;
+    }
+    if (normalizedTitle.isNotEmpty &&
+        (label.contains(normalizedTitle) ||
+            context.contains(normalizedTitle))) {
+      score += 100;
+    }
+    if (normalizedAuthor.isNotEmpty && context.contains(normalizedAuthor)) {
+      score += 5; // corroboration only; shared authors are not identity.
+    }
+    if (RegExp(
+      r'\b(previous|earlier|last|another|example|series|index|inspired|sequel)\b',
+    ).hasMatch(context)) {
+      score -= 80;
+    }
+    if (anchor.querySelector('img') != null) score += 10;
+    ranked.add((score, order, target));
+  }
+  ranked.sort((a, b) {
+    final evidence = b.$1.compareTo(a.$1);
+    return evidence == 0 ? a.$2.compareTo(b.$2) : evidence;
+  });
+  final seen = <String>{};
+  return [
+    for (final item in ranked)
+      if (seen.add(item.$3.toString())) item.$3,
+  ];
+}
+
+String _identityText(String value) => value
+    .toLowerCase()
+    .replaceAll(RegExp(r'[^a-z0-9]+'), ' ')
+    .replaceAll(RegExp(r'\s+'), ' ')
+    .trim();
 
 bool isLibraryDiagramLink(Uri uri) =>
     uri.scheme == 'https' &&

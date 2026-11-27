@@ -8,6 +8,41 @@ import 'package:sodukromental/boards.dart';
 import 'package:sodukromental/library.dart';
 
 void main() {
+  testWidgets(
+    'the saved shelf reopens with normal sync enabled and zero fetches',
+    (tester) async {
+      final dir = Directory.systemTemp.createTempSync('sodu-saved-shelf');
+      final db = File('${dir.path}/library.sqlite');
+      var requests = 0;
+      Future<LibraryStore> open() => LibraryStore.open(
+        executor: NativeDatabase(db),
+        records: const [],
+        fetch: (uri) async {
+          requests++;
+          throw StateError('The saved shelf attempted a fetch');
+        },
+      );
+      var store = await open();
+      await store.rememberShelf(true);
+      await store.close();
+      store = await open();
+      addTearDown(() async {
+        await store.close();
+        dir.deleteSync(recursive: true);
+      });
+      await tester.pumpWidget(
+        MaterialApp(home: LibraryScreen(store: store, active: false)),
+      );
+      await tester.pumpWidget(MaterialApp(home: LibraryScreen(store: store)));
+      await tester.pumpAndSettle();
+      final shelf = tester.widget<ChoiceChip>(
+        find.widgetWithText(ChoiceChip, 'Saved'),
+      );
+      expect(shelf.selected, isTrue);
+      expect(requests, 0);
+    },
+  );
+
   testWidgets('a fresh offline Library filters, solves and reopens a finale', (
     tester,
   ) async {

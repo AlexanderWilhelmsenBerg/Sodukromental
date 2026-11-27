@@ -1,9 +1,10 @@
 part of 'campaign.dart';
 
-const _saveVersion = 2;
+const _saveVersion = 3;
 
 Map<String, dynamic> _saveCampaign(Campaign campaign) => {
   'version': _saveVersion,
+  'weather': campaign.weather._save(),
   'seed': campaign.seed,
   'run': campaign._runNumber,
   'serial': campaign._serial,
@@ -34,6 +35,13 @@ Map<String, dynamic> _saveCampaign(Campaign campaign) => {
   'hatches': Map.of(campaign._hatchIds),
   'companion': campaign._companion?.toJson(),
   'companionChoice': campaign._companionChoice,
+  'bonds': [for (final bond in campaign._bonds.values) bond.toJson()],
+  'social': {
+    'activeMs': campaign._socialActiveMs,
+    'lastOpportunityAt': campaign._lastSocialOpportunityAt,
+    'handoffJobs': campaign._socialHandoffJobs.toList(),
+    'moments': [for (final moment in campaign._socialMoments) moment.toJson()],
+  },
   'producers': [
     for (final item in campaign._producerMap.values)
       {
@@ -50,6 +58,10 @@ Map<String, dynamic> _saveCampaign(Campaign campaign) => {
   'materials': {
     for (final item in campaign._materials.entries)
       item.key.name: item.value.map(_glyphJson).toList(),
+  },
+  'construction': {
+    for (final entry in campaign._construction.entries)
+      entry.key: entry.value.toJson(),
   },
   'materialQueue': campaign._materialQueue.map(_requestJson).toList(),
   'materialJobs': campaign._materialJobs.map(_jobJson).toList(),
@@ -75,6 +87,116 @@ Map<String, dynamic> _saveCampaign(Campaign campaign) => {
   },
   'cosmetics': campaign._cosmetics.toList(),
   'archives': campaign._archives.toList(),
+  'shatter': campaign._shatter == null
+      ? null
+      : _shatterJson(campaign._shatter!),
+  'population': {
+    'sequence': campaign._populationSequence,
+    'credits': campaign._arrivalCredits,
+    'paused': campaign._arrivalsPaused,
+    'accountedAt': campaign._populationAccountedAt,
+    'remainderMs': campaign._populationRemainderMs,
+    'grants': campaign._arrivalGrants.toList(),
+    'residents': campaign._communalResidents.toList(),
+  },
+  'residentAddresses': Map.of(campaign._residentAddresses),
+  'pinnedGoal': campaign._pinnedGoal,
+  'orders': {
+    for (final entry in campaign._orderProgress.entries)
+      entry.key.name: {
+        'accepted': entry.value.accepted,
+        'completed': entry.value.completed,
+        'steps': entry.value.steps.toList(),
+        'contributors': entry.value.contributors.toList(),
+      },
+  },
+  'presets': [
+    for (final preset in campaign._presets.values) _presetJson(preset),
+  ],
+  'productionBatch': {
+    'sequence': campaign._batchSequence,
+    'openedBy': campaign._batchOpenedBy,
+    'delivered': _numberedMap(campaign._batchDelivered),
+    'ranks': _numberedMap(campaign._batchRanks),
+    'settled': campaign._settledBatches.toList(),
+  },
+  'torchCrew': {
+    for (final entry in campaign._torchCrew.entries) entry.key: entry.value,
+  },
+  'seenLessons': campaign._seenLessons.toList(),
+  'practicedLessons': campaign._practicedLessons.toList(),
+  'directShatterPlacements': campaign._directShatterPlacements.toList(),
+  'prestigeTransactions': Map.of(campaign._prestigeTransactions),
+  'landmarkWitnesses': [
+    for (final witness in campaign._landmarkWitnesses.values)
+      _witnessJson(witness),
+  ],
+  'ceremonySteps': {
+    for (final entry in campaign._ceremonySteps.entries)
+      entry.key: entry.value.toList(),
+  },
+  'dedications': Map.of(campaign._dedications),
+  'projectWorkers': {
+    for (final entry in campaign._projectWorkers.entries)
+      entry.key: entry.value.toList(),
+  },
+  'padReservationTiles': campaign._padReservationTiles.toList(),
+  'settledInstallations': campaign._settledInstallations.toList(),
+  'practiceMaterials': campaign._practiceMaterials.map(_glyphJson).toList(),
+  'memorialRecipient': campaign._memorialRecipientId,
+  'memorial': campaign._memorial == null
+      ? null
+      : _memorialJson(campaign._memorial!),
+  'nurtureCommands': Map.of(campaign._nurtureCommands),
+  'discoveryCommands': Map.of(campaign._discoveryCommands),
+  'lastWorkerTask': {
+    for (final entry in campaign._lastWorkerTask.entries)
+      entry.key: entry.value.name,
+  },
+};
+
+Map<String, dynamic> _memorialJson(MemorialRecord record) => {
+  'runId': record.runId,
+  'recipientId': record.recipientId,
+  'recipientName': record.recipientName,
+  'fitterIds': record.fitterIds.toList(),
+  'glyphIds': record.glyphIds,
+};
+
+Map<String, dynamic> _witnessJson(LandmarkWitness witness) => {
+  'runId': witness.runId,
+  'boardId': witness.boardId,
+  'eventId': witness.eventId,
+  'workerId': witness.workerId,
+  'workerName': witness.workerName,
+  'eventKind': witness.eventKind.name,
+  'visibleResult': witness.visibleResult,
+};
+
+Map<String, dynamic> _shatterJson(ShatterLedger ledger) => {
+  'id': ledger.id,
+  'source': ledger.sourceBoardId,
+  'destination': ledger.destinationBoardId,
+  'totalSeams': ledger.totalSeams,
+  'openedSeams': ledger.openedSeams,
+  'assembled': ledger.assembled,
+  'fragments': [
+    for (final fragment in ledger.fragments.values)
+      {
+        'tileId': fragment.tileId,
+        'digit': fragment.digit,
+        'state': fragment.state.name,
+      },
+  ],
+};
+
+Map<String, dynamic> _presetJson(CrewPreset preset) => {
+  'id': preset.id,
+  'name': preset.name,
+  'assignments': {
+    for (final entry in preset.assignments.entries) entry.key: entry.value.name,
+  },
+  'restock': _numberedMap(preset.restockTargets),
 };
 
 Map<String, dynamic> _progressJson(_Progress state) => {
@@ -181,6 +303,7 @@ Map<String, dynamic> _requestJson(_Request request) => {
   'glyphId': request.glyphId,
   'initial': request.initial,
   'automatic': request.automatic,
+  'tileId': request.tileId,
 };
 
 _Request _requestFrom(Map<String, dynamic> json) => _Request(
@@ -195,6 +318,7 @@ _Request _requestFrom(Map<String, dynamic> json) => _Request(
   glyphId: json['glyphId'] as String?,
   initial: json['initial'] == true,
   automatic: json['automatic'] == true,
+  tileId: json['tileId'] as String?,
 );
 
 Map<String, dynamic> _jobJson(ColonyJob job) => {
@@ -208,6 +332,7 @@ Map<String, dynamic> _jobJson(ColonyJob job) => {
   'project': job.projectId,
   'glyphs': job.glyphs.map(_glyphJson).toList(),
   'reveal': job.reveal,
+  'tileIds': job._tileIds,
 };
 
 ColonyJob _jobFrom(Map<String, dynamic> json) => ColonyJob(
@@ -221,6 +346,7 @@ ColonyJob _jobFrom(Map<String, dynamic> json) => ColonyJob(
   projectId: json['project'] as String?,
   glyphs: _maps(json['glyphs']).map(_glyphFrom).toList(),
   reveal: json['reveal'] as String?,
+  tileIds: json['tileIds'] == null ? null : _list<String>(json['tileIds']),
 );
 
 List<Map<String, dynamic>> _maps(Object? value) =>
@@ -271,6 +397,26 @@ Campaign _restoreCampaign(Map<String, dynamic> json) {
   campaign._cleared.addAll(_list<String>(json['clears']));
   campaign._rewards.addAll(_list<String>(json['rewards']));
   campaign._creatures.addAll(_maps(json['creatures']).map(Creature.fromJson));
+  for (final saved in _maps(json['bonds'])) {
+    final bond = CreatureBond.fromJson(saved);
+    if (campaign._worker(bond.firstId) != null &&
+        campaign._worker(bond.secondId) != null) {
+      campaign._bonds[campaign._bondKey(bond.firstId, bond.secondId)] = bond;
+    }
+  }
+  final social = _map(json['social']);
+  campaign
+    .._socialActiveMs = social['activeMs'] as int? ?? 0
+    .._lastSocialOpportunityAt = social['lastOpportunityAt'] as int? ?? -8000
+    .._socialHandoffJobs.addAll(_list<String>(social['handoffJobs']));
+  for (final saved in _maps(social['moments'])) {
+    final moment = SocialMoment.fromJson(saved);
+    if (campaign._worker(moment.firstId) != null &&
+        campaign._worker(moment.secondId) != null &&
+        moment.dueActiveMs > campaign._socialActiveMs) {
+      campaign._socialMoments.add(moment);
+    }
+  }
   campaign._hatchIds.addAll(_map(json['hatches']).cast<String, String>());
   if (json['companion'] case final Map<String, dynamic> saved) {
     final creature = Creature.fromJson(saved);
@@ -298,6 +444,12 @@ Campaign _restoreCampaign(Map<String, dynamic> json) {
       item.value,
     ).map(_glyphFrom).toList();
   }
+  for (final item in _map(json['construction']).entries) {
+    final work = ConstructionProjectWork.fromJson(
+      Map<String, dynamic>.from(item.value as Map),
+    );
+    if (work.projectId == item.key) campaign._construction[item.key] = work;
+  }
   campaign._materialQueue.addAll(
     _maps(json['materialQueue']).map(_requestFrom),
   );
@@ -323,6 +475,141 @@ Campaign _restoreCampaign(Map<String, dynamic> json) {
   );
   campaign._cosmetics.addAll(_list<String>(json['cosmetics']));
   campaign._archives.addAll(_maps(json['archives']));
+  if (json['shatter'] case final Map<String, dynamic> saved) {
+    final fragments = <String, ShatterFragment>{};
+    for (final item in _maps(saved['fragments'])) {
+      final fragment = ShatterFragment(
+        item['tileId'] as String,
+        item['digit'] as int,
+        ShatterFragmentState.values.asNameMap()[item['state']] ??
+            ShatterFragmentState.locked,
+      );
+      fragments[fragment.tileId] = fragment;
+    }
+    campaign._shatter = ShatterLedger(
+      id: saved['id'] as String,
+      sourceBoardId: saved['source'] as String,
+      destinationBoardId: saved['destination'] as String,
+      totalSeams: saved['totalSeams'] as int,
+      openedSeams: saved['openedSeams'] as int? ?? 0,
+      assembled: saved['assembled'] == true,
+      fragments: fragments,
+    );
+  }
+  final population = _map(json['population']);
+  campaign
+    .._populationSequence = population['sequence'] as int? ?? 0
+    .._arrivalCredits = population['credits'] as int? ?? 0
+    .._arrivalsPaused = population['paused'] == true
+    .._populationAccountedAt = population['accountedAt'] as int? ?? 0
+    .._populationRemainderMs = population['remainderMs'] as int? ?? 0
+    .._arrivalGrants.addAll(_list<String>(population['grants']))
+    .._communalResidents.addAll(_list<String>(population['residents']))
+    .._pinnedGoal = json['pinnedGoal'] as String?
+    .._seenLessons.addAll(_list<String>(json['seenLessons']))
+    .._practicedLessons.addAll(_list<String>(json['practicedLessons']))
+    .._directShatterPlacements.addAll(
+      _list<String>(json['directShatterPlacements']),
+    )
+    .._prestigeTransactions.addAll(
+      _map(json['prestigeTransactions']).cast<String, String>(),
+    )
+    .._padReservationTiles.addAll(_list<String>(json['padReservationTiles']))
+    .._settledInstallations.addAll(_list<String>(json['settledInstallations']))
+    .._practiceMaterials.addAll(
+      _maps(json['practiceMaterials']).map(_glyphFrom),
+    )
+    .._memorialRecipientId = json['memorialRecipient'] as String?;
+  if (json['memorial'] case final Map<String, dynamic> saved) {
+    campaign._memorial = MemorialRecord(
+      runId: saved['runId'] as String? ?? campaign.runId,
+      recipientId: saved['recipientId'] as String,
+      recipientName: saved['recipientName'] as String? ?? '',
+      fitterIds: _list<String>(saved['fitterIds']).toSet(),
+      glyphIds: _list<String>(saved['glyphIds']),
+    );
+  }
+  campaign
+    .._nurtureCommands.addAll(
+      _map(json['nurtureCommands']).cast<String, String>(),
+    )
+    .._discoveryCommands.addAll(
+      _map(json['discoveryCommands']).cast<String, String>(),
+    );
+  for (final entry in _map(json['lastWorkerTask']).entries) {
+    final task = TaskKind.values.asNameMap()[entry.value];
+    if (task != null) campaign._lastWorkerTask[entry.key] = task;
+  }
+  for (final entry in _map(json['residentAddresses']).entries) {
+    campaign._residentAddresses[entry.key] = entry.value as int;
+  }
+  for (final entry in _map(json['orders']).entries) {
+    final saved = _map(entry.value);
+    final ledger =
+        _OrderLedger(
+            accepted: saved['accepted'] == true,
+            completed: saved['completed'] == true,
+          )
+          ..steps.addAll(_list<String>(saved['steps']))
+          ..contributors.addAll(_list<String>(saved['contributors']));
+    final order = SettlementOrder.values.asNameMap()[entry.key];
+    if (order != null) campaign._orderProgress[order] = ledger;
+  }
+  for (final saved in _maps(json['presets'])) {
+    final assignments = <String, TaskKind>{};
+    for (final entry in _map(saved['assignments']).entries) {
+      final task = TaskKind.values.asNameMap()[entry.value];
+      if (task != null) assignments[entry.key] = task;
+    }
+    final restock = <int, int>{};
+    for (final entry in _map(saved['restock']).entries) {
+      restock[int.parse(entry.key)] = entry.value as int;
+    }
+    final preset = CrewPreset(
+      id: saved['id'] as String,
+      name: saved['name'] as String,
+      assignments: assignments,
+      restockTargets: restock,
+    );
+    campaign._presets[preset.id] = preset;
+  }
+  final batch = _map(json['productionBatch']);
+  campaign
+    .._batchSequence = batch['sequence'] as int? ?? 0
+    .._batchOpenedBy = batch['openedBy'] as String?
+    .._settledBatches.addAll(_list<String>(batch['settled']));
+  for (final entry in _map(batch['delivered']).entries) {
+    campaign._batchDelivered[int.parse(entry.key)] = entry.value as int;
+  }
+  for (final entry in _map(batch['ranks']).entries) {
+    campaign._batchRanks[int.parse(entry.key)] = entry.value as int;
+  }
+  for (final entry in _map(json['torchCrew']).entries) {
+    campaign._torchCrew[entry.key] = _list<String>(entry.value);
+  }
+  for (final saved in _maps(json['landmarkWitnesses'])) {
+    final witness = LandmarkWitness(
+      runId: saved['runId'] as String,
+      boardId: saved['boardId'] as String,
+      eventId: saved['eventId'] as String,
+      workerId: saved['workerId'] as String,
+      workerName: saved['workerName'] as String? ?? '',
+      eventKind:
+          TaskKind.values.asNameMap()[saved['eventKind']] ?? TaskKind.torch,
+      visibleResult: saved['visibleResult'] as String? ?? '',
+    );
+    campaign._landmarkWitnesses['${witness.boardId}:${witness.eventId}'] =
+        witness;
+  }
+  for (final entry in _map(json['ceremonySteps']).entries) {
+    campaign._ceremonySteps[entry.key] = _list<String>(entry.value).toSet();
+  }
+  campaign._dedications.addAll(
+    _map(json['dedications']).cast<String, String>(),
+  );
+  for (final entry in _map(json['projectWorkers']).entries) {
+    campaign._projectWorkers[entry.key] = _list<String>(entry.value).toSet();
+  }
   for (final item in _map(json['almanacCrews']).entries) {
     campaign._almanacCrews[item.key] = Map.of(
       _map(item.value).cast<String, String>(),
@@ -336,6 +623,32 @@ Campaign _restoreCampaign(Map<String, dynamic> json) {
     if (boardsById.containsKey(id))
       campaign._almanacCrews.putIfAbsent(id, () => {});
   }
+  final savedVersion = json['version'] as int? ?? 0;
+  if (campaign._cleared.contains('halo') ||
+      campaign._archives.any(
+        (archive) => _list<String>(archive['clears']).contains('halo'),
+      )) {
+    campaign._learnedFog.add(FogKind.halo);
+  }
+  if (savedVersion < 3 && campaign._cleared.contains('growth-6')) {
+    campaign._populationAccountedAt = campaign._clock;
+    campaign._arrivalCredits = math.min(
+      2,
+      campaign._cleared
+          .where((id) => id != 'opening' && id != 'growth-5')
+          .length,
+    );
+    campaign._spendArrivalCredits();
+    if (campaign._batchOpenedBy == null &&
+        campaign.charter != Charter.noProducers) {
+      campaign._batchSequence = 1;
+      campaign._batchOpenedBy = campaign._cleared.lastOrNull ?? 'migration';
+      for (final entry in campaign._producerMap.entries) {
+        campaign._batchRanks[entry.key] = entry.value.rank;
+      }
+    }
+  }
+  campaign.weather._restore(_map(json['weather']));
   return campaign;
 }
 

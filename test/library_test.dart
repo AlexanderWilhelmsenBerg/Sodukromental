@@ -310,6 +310,7 @@ void main() {
         ),
       );
       expect(store.challenges.single.id, '000ABC');
+      final installedRequests = requests;
       await store.close();
 
       offline = true;
@@ -319,6 +320,7 @@ void main() {
         records: records,
         includeAuthored: false,
       );
+      expect(requests, installedRequests);
       expect(store.browse(onlySaved: true).map((entry) => entry.id).toSet(), {
         '000ABC',
         '000DEF',
@@ -328,6 +330,7 @@ void main() {
         4,
       });
       expect(store.challenges.single.id, '000ABC');
+      expect(requests, installedRequests);
       await store.removeDownload('000ABC');
       expect(store.availability('000ABC'), LibraryAvailability.original);
       expect(store.getSave('000ABC', revision), isNotNull);

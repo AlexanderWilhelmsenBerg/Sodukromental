@@ -1,12 +1,20 @@
 import 'dart:math' as math;
 
 import 'boards.dart';
+import 'construction.dart';
+import 'creature_social.dart';
 import 'creatures.dart';
 
 export 'boards.dart';
+export 'construction.dart';
+export 'creature_social.dart';
 export 'creatures.dart' show MaterialRole, TaskKind;
 
 part 'campaign_save.dart';
+part 'campaign_construction.dart';
+part 'campaign_weather.dart';
+part 'campaign_domain.dart';
+part 'campaign_social.dart';
 
 enum GravityDirection { up, right, down, left }
 
@@ -68,7 +76,9 @@ class ColonyJob {
     this.projectId,
     List<MaterialGlyph> glyphs = const [],
     this.reveal,
-  }) : glyphs = List.unmodifiable(glyphs);
+    List<String>? tileIds,
+  }) : glyphs = List.unmodifiable(glyphs),
+       _tileIds = tileIds == null ? null : List.unmodifiable(tileIds);
 
   final String id;
   final TaskKind kind;
@@ -80,9 +90,16 @@ class ColonyJob {
   final String? projectId;
   final List<MaterialGlyph> glyphs;
   final String? reveal;
-  List<String> get tileIds => kind == TaskKind.digit
-      ? List.generate(count, (index) => 'delivery:$id:$index', growable: false)
-      : const [];
+  final List<String>? _tileIds;
+  List<String> get tileIds =>
+      _tileIds ??
+      (kind == TaskKind.digit
+          ? List.generate(
+              count,
+              (index) => 'delivery:$id:$index',
+              growable: false,
+            )
+          : const []);
 }
 
 class ProjectSpec {
@@ -120,6 +137,7 @@ class _Request {
     this.glyphId,
     this.initial = false,
     this.automatic = false,
+    this.tileId,
   });
   final String id;
   final TaskKind kind;
@@ -132,6 +150,7 @@ class _Request {
   final String? glyphId;
   final bool initial;
   final bool automatic;
+  final String? tileId;
 }
 
 class _Undo {
@@ -226,6 +245,7 @@ class Campaign {
   int _serial = 0;
   int _designed = 0;
   int _clock;
+  final weather = ColonyWeather();
   int _fragments = 0;
   int _noticeSequence = 0;
   int get fragments => _fragments;
@@ -250,6 +270,7 @@ class Campaign {
   final _assignments = <String, TaskKind>{};
   final _restock = <int, int>{};
   final _materials = <MaterialRole, List<MaterialGlyph>>{};
+  final _construction = <String, ConstructionProjectWork>{};
   final _materialQueue = <_Request>[];
   final _materialJobs = <ColonyJob>[];
   final _claimedGlyphs = <String>{};
@@ -262,6 +283,45 @@ class Campaign {
   final _almanacCrews = <String, Map<String, String>>{};
   final _cosmetics = <String>{};
   final _archives = <Map<String, dynamic>>[];
+  ShatterLedger? _shatter;
+  int _populationSequence = 0;
+  int _arrivalCredits = 0;
+  bool _arrivalsPaused = false;
+  int _populationAccountedAt = 0;
+  int _populationRemainderMs = 0;
+  final _arrivalGrants = <String>{};
+  final _residentAddresses = <String, int>{};
+  String? _pinnedGoal;
+  final _orderProgress = <SettlementOrder, _OrderLedger>{};
+  final _presets = <String, CrewPreset>{};
+  int _batchSequence = 0;
+  String? _batchOpenedBy;
+  final _batchDelivered = <int, int>{};
+  final _batchRanks = <int, int>{};
+  final _settledBatches = <String>{};
+  final _prestigeTransactions = <String, String>{};
+  final _communalResidents = <String>{};
+  final _bonds = <String, CreatureBond>{};
+  final _socialMoments = <SocialMoment>[];
+  int _socialActiveMs = 0;
+  int _lastSocialOpportunityAt = -8000;
+  final _socialHandoffJobs = <String>{};
+  final _torchCrew = <String, List<String>>{};
+  final _seenLessons = <String>{};
+  final _practicedLessons = <String>{};
+  final _directShatterPlacements = <String>{};
+  final _landmarkWitnesses = <String, LandmarkWitness>{};
+  final _ceremonySteps = <String, Set<String>>{};
+  final _dedications = <String, String>{};
+  final _projectWorkers = <String, Set<String>>{};
+  final _padReservationTiles = <String>{};
+  final _settledInstallations = <String>{};
+  final _practiceMaterials = <MaterialGlyph>[];
+  String? _memorialRecipientId;
+  MemorialRecord? _memorial;
+  final _nurtureCommands = <String, String>{};
+  final _discoveryCommands = <String, String>{};
+  final _lastWorkerTask = <String, TaskKind>{};
   Creature? _companion;
   String? _returnBoard;
   late _Progress _current;
@@ -351,8 +411,11 @@ class Campaign {
   });
 
   List<DigitOffer> get offers => List.unmodifiable(_current.offers);
-  List<ColonyJob> get jobs =>
-      List.unmodifiable([..._current.jobs, ..._materialJobs]);
+  List<ColonyJob> get jobs => List.unmodifiable([
+    ..._current.jobs,
+    ..._materialJobs,
+    ...constructionJobs,
+  ]);
   CreatureReaction? get reaction => _current.reaction;
   int? get stashedDigit => _current.stashDigit;
   GravityDirection get gravity => _current.gravity;
@@ -411,6 +474,14 @@ class Campaign {
       (_cleared.contains('growth-5')
           ? _legacyUpgrades[LegacyUpgrade.extraNest] ?? 0
           : 0);
+  PopulationState get population => PopulationState(
+    personalBeds: housing,
+    communalCapacity: _communalCapacity,
+    communalResidents: _communalResidents.length,
+    arrivalCredits: _arrivalCredits,
+    arrivalsPaused: _arrivalsPaused,
+    postLimit: _fieldPostLimit,
+  );
 
   GrowthMilestone get growthMilestone {
     if (_cleared.contains('arrows')) return GrowthMilestone.arrows;
@@ -466,7 +537,7 @@ class Campaign {
       return 'Finish the Meeting Hall to record the colony’s ending.';
     if (cleared) return 'Board cleared. Continue when ready.';
     if (sliding && !tutorialReady)
-      return 'Slide the loose digits to make four valid spaces for 4.';
+      return 'Slide one loose tile into a touching empty square. Move up, down, left or right until each gap can hold a 4.';
     if (board.id == 'opening' && tutorialTokens > 0)
       return 'Place the $tutorialTokens missing 4s from the sentence.';
     if (canCreateAmoeba) return 'Create an amoeba to find the last 4.';
@@ -507,7 +578,7 @@ class Campaign {
       if (charter != Charter.oneHelper || worker.isAmoeba) worker,
   ];
   bool _perk(Creature worker, WorkPerk perk) =>
-      worker.perks.contains(perk) &&
+      worker.recipe.perks.contains(perk) &&
       growthMilestone.index >= perk.milestone.index;
 
   _Progress _load(String id) => _progress.putIfAbsent(id, () {
@@ -775,6 +846,7 @@ class Campaign {
   }
 
   void _place(int index, int digit, _Tile tile) {
+    _residentAddresses.removeWhere((_, cell) => cell == index);
     final old = _current.cells[index];
     final oldTile = _current.tiles.remove(index);
     final notes = _current.notes.remove(index) ?? <int>{};
@@ -782,6 +854,25 @@ class Campaign {
     _current.reaction = null;
     _current.cells[index] = digit;
     _current.tiles[index] = tile;
+    _padReservationTiles.remove(tile.id);
+    final fragment = _shatter?.fragments[tile.id];
+    if (fragment != null) {
+      if (fragment.state == ShatterFragmentState.unsorted) {
+        _directShatterPlacements.add(tile.id);
+      }
+      _shatter!.fragments[tile.id] = ShatterFragment(
+        tile.id,
+        fragment.digit,
+        ShatterFragmentState.placed,
+      );
+    }
+    if (tile.origin case final workerId?) {
+      if (board.id.startsWith('growth-')) {
+        _recordOrderStep(SettlementOrder.supply, 'digit:$digit', workerId);
+      }
+      _recordOrderStep(SettlementOrder.build, 'digit', workerId);
+      _recordOrderStep(SettlementOrder.lanterns, 'digit', workerId);
+    }
     if (board.fog != FogKind.none) {
       _current.fixed.add(index);
       _checkReveals();
@@ -803,7 +894,17 @@ class Campaign {
         _current.cells[index] == 0)
       return false;
     final digit = _current.cells[index];
+    _residentAddresses.removeWhere((_, cell) => cell == index);
     final tile = _current.tiles.remove(index)!;
+    final fragment = _shatter?.fragments[tile.id];
+    if (fragment != null) {
+      _directShatterPlacements.remove(tile.id);
+      _shatter!.fragments[tile.id] = ShatterFragment(
+        tile.id,
+        fragment.digit,
+        ShatterFragmentState.stock,
+      );
+    }
     _current.undo.add(_Undo(index, digit, tile: tile));
     _putStock(digit, [tile]);
     _current.reaction = null;
@@ -816,6 +917,8 @@ class Campaign {
     if (cleared || _current.undo.isEmpty || board.fog != FogKind.none)
       return false;
     final move = _current.undo.last;
+    final returningId = _current.tiles[move.index]?.id;
+    _residentAddresses.removeWhere((_, cell) => cell == move.index);
     if (move.source != null) {
       _current.cells[move.source!] = move.oldDigit;
       _current.cells[move.index] = 0;
@@ -845,6 +948,17 @@ class Campaign {
         _current.notes[move.index] = move.notes.toSet();
     }
     _current.undo.removeLast();
+    if (returningId != null) {
+      final fragment = _shatter?.fragments[returningId];
+      if (fragment != null) {
+        final direct = _directShatterPlacements.remove(returningId);
+        _shatter!.fragments[returningId] = ShatterFragment(
+          returningId,
+          fragment.digit,
+          direct ? ShatterFragmentState.unsorted : ShatterFragmentState.stock,
+        );
+      }
+    }
     _current.reaction = null;
     _changed();
     return true;
@@ -875,7 +989,9 @@ class Campaign {
 
   String? visibleConflictHint(String workerId) {
     final worker = _worker(workerId);
-    if (worker == null || !_perk(worker, WorkPerk.visibleConflictCheck))
+    if (worker == null ||
+        (!_perk(worker, WorkPerk.visibleConflictCheck) &&
+            !worker.workProfile.canInspectVisibleConflict))
       return null;
     final candidates = checkBoard();
     if (candidates.isEmpty)
@@ -1093,16 +1209,56 @@ class Campaign {
         if (_perk(worker, WorkPerk.fastBuilder)) multiplier *= 0.8;
         break;
     }
+    final profile = worker.workProfile;
+    final requestCapacity = request.kind == TaskKind.building
+        ? math.max(
+            _perk(worker, WorkPerk.letterCarrier) ? 2 : 1,
+            worker.workProfile.sameProjectGlyphCapacity,
+          )
+        : 1;
+    final reveal = request.reveal == null
+        ? null
+        : board.reveals.where((item) => item.id == request.reveal).firstOrNull;
+    multiplier *= profile.multiplierFor(
+      task: request.kind,
+      tilt: board.gravity,
+      support: request.role == MaterialRole.support,
+      notice: request.kind == TaskKind.building && request.glyphId == null,
+      linked: board.id == 'linked-torches',
+      starter: request.initial || request.reveal == 'starter',
+      urgentOutsidePreference:
+          request.priority && _assignments[worker.id] != request.kind,
+      firstProjectTrip:
+          request.project != null &&
+          !_projectWorkers.containsKey(request.project) &&
+          !_materialJobs.any((job) => job.projectId == request.project),
+      finalProjectTrip:
+          request.project != null && request.count <= requestCapacity,
+      favoriteDigit: request.digit == worker.favorite,
+      manuallyPrioritized: request.priority && !request.automatic,
+      multiCopy: request.count > 1,
+      markedLetter: request.glyphId != null,
+      multiAnchor: (reveal?.requires.length ?? 0) > 1,
+      changedWorkType:
+          _lastWorkerTask[worker.id] != null &&
+          _lastWorkerTask[worker.id] != request.kind,
+      twoWaitingJobs: _current.queue.length + _materialQueue.length >= 2,
+    );
     return (base * math.max(0.5, multiplier)).round();
   }
 
   int _offerMs(Creature worker) =>
-      _perk(worker, WorkPerk.longerOffer) ? 6000 : 4000;
+      4000 +
+      math.max(
+        _perk(worker, WorkPerk.longerOffer) ? 2000 : 0,
+        worker.workProfile.offerExtensionMs,
+      );
 
   void _dispatch() {
     if (_current.queue.isEmpty && _materialQueue.isEmpty) return;
     final inUse = jobs.map((job) => job.workerId).toSet();
     for (final worker in _workingCreatures) {
+      if (inUse.length >= _fieldPostLimit) break;
       if (inUse.contains(worker.id)) continue;
       final available = [..._current.queue, ..._materialQueue];
       if (available.isEmpty) break;
@@ -1115,6 +1271,7 @@ class Campaign {
           bestScore = score;
         }
       }
+      if (best.kind == TaskKind.torch && !fogStaffing.ready) continue;
       // Give an idle role specialist the first chance, but no assignment may block a job.
       final preferred = _workingCreatures.any(
         (other) =>
@@ -1140,14 +1297,19 @@ class Campaign {
       final count = switch (task) {
         TaskKind.digit => math.min(
           best.count,
-          1 +
-              (_perk(worker, WorkPerk.extraDigitGrip) ? 1 : 0) +
+          math.max(
+                _perk(worker, WorkPerk.extraDigitGrip) ? 2 : 1,
+                worker.workProfile.sameDigitCapacity,
+              ) +
               (_built.containsKey('workshop') && !best.initial ? 1 : 0),
         ),
         TaskKind.torch => 1,
         TaskKind.building => math.min(
           best.count,
-          _perk(worker, WorkPerk.letterCarrier) ? 2 : 1,
+          math.max(
+            _perk(worker, WorkPerk.letterCarrier) ? 2 : 1,
+            worker.workProfile.sameProjectGlyphCapacity,
+          ),
         ),
       };
       final glyphs = task == TaskKind.building
@@ -1159,8 +1321,12 @@ class Campaign {
                 ),
             ]
           : <MaterialGlyph>[];
+      final jobId = _id('trip');
+      final cargoTileIds = task == TaskKind.digit
+          ? _digitCargoIds(best, count, jobId)
+          : null;
       final job = ColonyJob(
-        id: _id('trip'),
+        id: jobId,
         kind: task,
         workerId: worker.id,
         dueAt: _clock + _tripMs(worker, best),
@@ -1170,6 +1336,7 @@ class Campaign {
         projectId: best.project,
         glyphs: glyphs,
         reveal: best.reveal,
+        tileIds: cargoTileIds,
       );
       if (task == TaskKind.building) {
         _materialJobs.add(job);
@@ -1185,9 +1352,56 @@ class Campaign {
     }
   }
 
+  List<String> _digitCargoIds(_Request request, int count, String jobId) {
+    final digit = request.digit!;
+    final explicit = request.tileId == null
+        ? const <String>[]
+        : [request.tileId!];
+    final captured =
+        _shatter?.fragments.values
+            .where(
+              (fragment) =>
+                  fragment.digit == digit &&
+                  fragment.state == ShatterFragmentState.captured,
+            )
+            .take(math.max(0, count - explicit.length))
+            .toList() ??
+        const <ShatterFragment>[];
+    for (final fragment in captured) {
+      _shatter!.fragments[fragment.tileId] = ShatterFragment(
+        fragment.tileId,
+        digit,
+        ShatterFragmentState.inTransit,
+      );
+    }
+    return [
+      ...explicit,
+      ...captured.map((fragment) => fragment.tileId),
+      for (
+        var index = explicit.length + captured.length;
+        index < count;
+        index++
+      )
+        'delivery:$jobId:$index',
+    ];
+  }
+
   void _releaseOffer(DigitOffer offer) {
     _current.offers.remove(offer);
-    _putStock(offer.digit, offer._tiles);
+    _putStock(offer.digit, [
+      for (final tile in offer._tiles)
+        if (_padReservationTiles.remove(tile.id)) _Tile(tile.id) else tile,
+    ]);
+    for (final tile in offer._tiles) {
+      final fragment = _shatter?.fragments[tile.id];
+      if (fragment != null) {
+        _shatter!.fragments[tile.id] = ShatterFragment(
+          tile.id,
+          fragment.digit,
+          ShatterFragmentState.stock,
+        );
+      }
+    }
     _current.idleOfferAfter = _clock + 12000;
     if (_current.heldOffer == offer.id)
       _current
@@ -1199,11 +1413,22 @@ class Campaign {
     _materialJobs.remove(job);
     _current.jobs.remove(job);
     _worker(job.workerId)?.memory.recordTask(runId, board.id, job.kind);
+    _lastWorkerTask[job.workerId] = job.kind;
     switch (job.kind) {
       case TaskKind.digit:
         final tiles = job.tileIds.map((id) => _Tile(id, job.workerId)).toList();
         if (offline) {
           _putStock(job.digit!, tiles);
+          for (final tile in tiles) {
+            final fragment = _shatter?.fragments[tile.id];
+            if (fragment != null) {
+              _shatter!.fragments[tile.id] = ShatterFragment(
+                tile.id,
+                fragment.digit,
+                ShatterFragmentState.stock,
+              );
+            }
+          }
         } else {
           final worker = _worker(job.workerId);
           final duration = worker == null ? 4000 : _offerMs(worker);
@@ -1225,12 +1450,43 @@ class Campaign {
         _worker(
           job.workerId,
         )?.memory.recordContribution(runId, board.id, TaskKind.torch);
+        _recordOrderStep(SettlementOrder.lanterns, 'torch', job.workerId);
+        if (job.reveal == 'starter') {
+          _witnessEcology('starter-torch-delivered');
+        }
+        if (board.id == 'trail' && job.reveal == 'starter') {
+          _witnessEcology('trail-doubled-footprint');
+        }
+        if (board.id == 'night-market' && job.reveal == 'market-3') {
+          final worker = _worker(job.workerId);
+          _landmarkWitnesses.putIfAbsent(
+            'night-market:market-3',
+            () => LandmarkWitness(
+              runId: runId,
+              boardId: board.id,
+              eventId: 'market-3',
+              workerId: job.workerId,
+              workerName: worker?.name ?? '',
+              eventKind: TaskKind.torch,
+              visibleResult: 'Lit the third market patch.',
+            ),
+          );
+        }
         _checkReveals();
         _checkClear();
         break;
       case TaskKind.building:
         for (final glyph in job.glyphs) {
-          _materials.putIfAbsent(glyph.role, () => []).add(glyph);
+          if (job.projectId == 'practice-site') {
+            _practiceMaterials.add(glyph);
+          } else {
+            _materials.putIfAbsent(glyph.role, () => []).add(glyph);
+          }
+        }
+        if (job.projectId case final projectId?) {
+          _projectWorkers
+              .putIfAbsent(projectId, () => <String>{})
+              .add(job.workerId);
         }
         if (job.projectId == 'meeting-hall') {
           _hallWorkers.add(job.workerId);
@@ -1306,9 +1562,12 @@ class Campaign {
       var target = entry.value;
       if (_workingCreatures.any(
         (worker) =>
-            worker.favorite == digit && _perk(worker, WorkPerk.favoriteStock),
-      ))
+            worker.favorite == digit &&
+            (_perk(worker, WorkPerk.favoriteStock) ||
+                worker.workProfile.favoriteRestockBonus > 0),
+      )) {
         target++;
+      }
       final inFlight = _reservedDigits(digit) + _trayCount(digit);
       final alreadyQueued = _current.queue
           .where((item) => item.digit == digit)
@@ -1363,6 +1622,9 @@ class Campaign {
     } else {
       _assignments[workerId] = task;
     }
+    if (task != null) {
+      _recordOrderStep(SettlementOrder.lanterns, 'priority', workerId);
+    }
     _dispatch();
     _changed();
     return true;
@@ -1383,7 +1645,7 @@ class Campaign {
     return true;
   }
 
-  void tick(DateTime now, {bool offline = false}) {
+  void tick(DateTime now, {bool offline = false, bool colonyVisible = true}) {
     final target = now.millisecondsSinceEpoch;
     if (target < _clock) return;
     final serial = _serial;
@@ -1402,12 +1664,24 @@ class Campaign {
         ..heldSince = null;
     }
     final productiveEnd = offline ? math.min(target, _clock + 120000) : target;
+    final weatherDelta = offline || !colonyVisible
+        ? 0
+        : math.min(target - _clock, 1000);
+    _accruePopulation(_clock, productiveEnd, target);
     for (final producer in _producerMap.values) {
       if (producer.nextAt <= productiveEnd && charter != Charter.noProducers) {
-        final units =
-            (1 + (productiveEnd - producer.nextAt) ~/ producer.interval) *
-            producer.rank;
-        producer.nextAt += units ~/ producer.rank * producer.interval;
+        final possibleCycles =
+            1 + (productiveEnd - producer.nextAt) ~/ producer.interval;
+        final cap = producer.type == ProducerType.rna ? 6 : 2;
+        final delivered = _batchDelivered[producer.digit] ?? 0;
+        final cycles = _batchOpenedBy == null
+            ? possibleCycles
+            : math.min(possibleCycles, math.max(0, cap - delivered));
+        final rank = _batchRanks[producer.digit] ?? producer.rank;
+        final units = cycles * rank;
+        producer.nextAt += possibleCycles * producer.interval;
+        if (_batchOpenedBy != null)
+          _batchDelivered[producer.digit] = delivered + cycles;
         switch (producer.type) {
           case ProducerType.rna:
             rna += units;
@@ -1424,8 +1698,12 @@ class Campaign {
     _dispatch();
     var expired = 0;
     while (true) {
-      final dueJobs = jobs.where((job) => job.dueAt <= target).toList()
-        ..sort((a, b) => a.dueAt.compareTo(b.dueAt));
+      final dueJobs =
+          [
+              ..._current.jobs,
+              ..._materialJobs,
+            ].where((job) => job.dueAt <= target).toList()
+            ..sort((a, b) => a.dueAt.compareTo(b.dueAt));
       final dueOffers =
           _current.offers
               .where(
@@ -1448,6 +1726,7 @@ class Campaign {
       }
       _dispatch();
     }
+    final constructionChanged = _advanceConstruction(target);
     _clock = target;
     final recalled =
         _current.stashDue != null &&
@@ -1463,7 +1742,15 @@ class Campaign {
           ? null
           : 'While away: $trips trips, +$producedDna DNA, +$producedRna RNA.';
     }
-    if (_serial != serial ||
+    final weatherChanged = weather._advance(weatherDelta, this);
+    final socialChanged = _advanceSocial(
+      weatherDelta,
+      visible: colonyVisible && !offline,
+    );
+    if (weatherChanged ||
+        socialChanged ||
+        constructionChanged ||
+        _serial != serial ||
         trips + expired + producedDna + producedRna > 0 ||
         recalled ||
         acted ||
@@ -1493,17 +1780,31 @@ class Campaign {
     MaterialRole.support: 3,
     MaterialRole.beam: 2,
   });
+  static const _practiceSite = ProjectSpec('practice-site', 'Practice site', {
+    MaterialRole.beam: 1,
+  });
   static const _hall = ProjectSpec('meeting-hall', 'Meeting Hall', {
     MaterialRole.roof: 2,
     MaterialRole.support: 4,
     MaterialRole.beam: 2,
+  });
+  static const _memorialProject = ProjectSpec('memorial', 'Colony memorial', {
+    MaterialRole.roof: 1,
+    MaterialRole.support: 2,
+    MaterialRole.beam: 1,
   });
 
   List<ProjectSpec> get projects => [
     if (_cleared.contains('growth-5')) _nest,
     if (_cleared.contains('growth-7')) ...[_house, _storehouse],
     if (_cleared.contains('growth-8')) _workshop,
+    if (_orderProgress[SettlementOrder.build]?.accepted == true &&
+        _orderProgress[SettlementOrder.build]?.completed != true &&
+        const {'house', 'storehouse', 'workshop'}.every(_built.containsKey))
+      _practiceSite,
     if (_cleared.contains('arrows')) _hall,
+    if (_built.containsKey('meeting-hall') && _memorial == null)
+      _memorialProject,
     for (final item in campaignBoards.where(
       (board) => board.expedition && _cleared.contains(board.id),
     ))
@@ -1517,6 +1818,7 @@ class Campaign {
     final available = starterGlyphs.where(
       (item) =>
           item.role == role &&
+          !reservedSocialGlyphIds.contains(item.id) &&
           !_claimedGlyphs.contains(item.id) &&
           !_materialQueue.any(
             (request) =>
@@ -1538,6 +1840,7 @@ class Campaign {
         starter ??
         MaterialGlyph('settlement-${++_noticeSequence}', letters[role]!, role);
     _claimedGlyphs.add(glyph.id);
+    weather.drain(glyph.id);
     return glyph;
   }
 
@@ -1545,16 +1848,22 @@ class Campaign {
     final project = projects.where((item) => item.id == projectId).firstOrNull;
     if (project == null || _built.containsKey(projectId)) return 0;
     final reserved = _materialJobs
+        .where((job) => job.projectId == projectId)
         .expand((job) => job.glyphs)
         .where((glyph) => glyph.role == role)
         .length;
     final queued = _materialQueue
-        .where((request) => request.role == role)
+        .where(
+          (request) => request.project == projectId && request.role == role,
+        )
         .fold<int>(0, (sum, request) => sum + request.count);
+    final stocked = projectId == 'practice-site'
+        ? _practiceMaterials.where((glyph) => glyph.role == role).length
+        : (_materials[role]?.length ?? 0);
     return math.max(
       0,
       (project.requirements[role] ?? 0) -
-          (_materials[role]?.length ?? 0) -
+          stocked -
           reserved -
           queued -
           (role == MaterialRole.support ? math.min(1, _fragments) : 0),
@@ -1567,6 +1876,9 @@ class Campaign {
     int count = 1,
     String? glyphId,
   }) {
+    if (glyphId != null && reservedSocialGlyphIds.contains(glyphId)) {
+      returnSocialGlyph(glyphId);
+    }
     if (glyphId != null &&
         (_claimedGlyphs.contains(glyphId) ||
             _materialQueue.any((request) => request.glyphId == glyphId) ||
@@ -1595,6 +1907,9 @@ class Campaign {
   bool cancelJob(String id) {
     final job = jobs.where((item) => item.id == id).firstOrNull;
     if (job == null || job.kind != TaskKind.building) return false;
+    if (id.startsWith('construction:')) {
+      return pauseConstruction(job.projectId!);
+    }
     _materialJobs.remove(job);
     _claimedGlyphs.removeAll(job.glyphs.map((glyph) => glyph.id));
     _dispatch();
@@ -1603,40 +1918,29 @@ class Campaign {
   }
 
   bool canBuild(String projectId) {
+    if (projectId == 'memorial' && _memorialRecipientId == null) return false;
     final project = projects.where((item) => item.id == projectId).firstOrNull;
     if (project == null || _built.containsKey(projectId)) return false;
-    return project.requirements.entries.every(
-      (item) =>
-          (_materials[item.key]?.length ?? 0) +
-              (item.key == MaterialRole.support
-                  ? math.min(1, _fragments)
-                  : 0) >=
-          item.value,
-    );
+    return _construction.containsKey(projectId) || _rawMaterialsCover(project);
   }
 
   bool build(String projectId) {
     if (!canBuild(projectId)) return false;
-    final project = projects.firstWhere((item) => item.id == projectId);
-    final glyphs = <MaterialGlyph>[];
-    for (final requirement in project.requirements.entries) {
-      final available = _materials.putIfAbsent(requirement.key, () => []);
-      for (var count = 0; count < requirement.value; count++) {
-        if (available.isNotEmpty) {
-          glyphs.add(available.removeAt(0));
-        } else {
-          _fragments--;
-          glyphs.add(MaterialGlyph(_id('fragment'), '✧', MaterialRole.support));
-        }
-      }
+    if (!_construction.containsKey(projectId) &&
+        !startConstruction(projectId)) {
+      return false;
     }
-    _built[projectId] = glyphs;
-    if (projectId == 'meeting-hall') {
-      for (final workerId in _hallWorkers) {
-        _recordHallContribution(workerId);
-      }
+    final work = _construction[projectId]!;
+    final fitter = _constructionWorker(projectId);
+    if (fitter != null) {
+      _projectWorkers.putIfAbsent(projectId, () => <String>{}).add(fitter);
     }
-    if (projectId.startsWith('cosmetic-')) _cosmetics.add(projectId);
+    for (final load in work.loads) {
+      load
+        ..stage = ConstructionLoadStage.installed
+        ..dueAt = null;
+    }
+    _finishConstruction(work);
     _changed();
     return true;
   }
@@ -1799,16 +2103,35 @@ class Campaign {
   }
 
   void _installProducer(int digit, ProducerType type, int rank, [int? nextAt]) {
+    final firstInstallation = !_producerMap.containsKey(digit);
     _producerMap[digit] = DigitProducer(
       digit,
       type,
       rank,
       nextAt ?? _clock + (type == ProducerType.rna ? 10000 : 40000),
     );
+    if (_batchOpenedBy != null) {
+      _batchRanks.putIfAbsent(digit, () => 1);
+      _batchDelivered.putIfAbsent(digit, () => 0);
+      final batchId = '$runId:batch:$_batchSequence';
+      final receipt = '$batchId:install:$digit';
+      if (firstInstallation &&
+          completed &&
+          _settledBatches.contains(batchId) &&
+          _settledInstallations.add(receipt)) {
+        final cycles = type == ProducerType.rna ? 6 : 2;
+        if (type == ProducerType.rna) {
+          rna += cycles;
+        } else {
+          dna += cycles;
+        }
+        _batchDelivered[digit] = cycles;
+      }
+    }
   }
 
-  HatchPrice hatchPrice(int perkCount) =>
-      HatchPrice.quote(_designed + 1, perkCount);
+  HatchPrice hatchPrice(int responseCount) =>
+      HatchPrice.quote(_designed + 1, responseCount);
 
   Creature? hatch(
     String commandId,
@@ -1824,10 +2147,16 @@ class Campaign {
     if (commandId.isEmpty ||
         !_cleared.contains('growth-5') ||
         charter == Charter.oneHelper ||
-        _creatures.length - chosen >= housing ||
+        _creatures
+                    .where((worker) => !_communalResidents.contains(worker.id))
+                    .length -
+                chosen >=
+            housing ||
         recipe.validate(growthMilestone).isNotEmpty)
       return null;
-    final price = hatchPrice(recipe.perks.length);
+    final price = hatchPrice(
+      recipe.ecologyPath?.responseCount ?? recipe.perks.length,
+    );
     if ((quote != null && quote != price) || dna < price.dna || rna < price.rna)
       return null;
     final creature = Creature.generate(
@@ -1900,6 +2229,7 @@ class Campaign {
       if (!libraryChallenge) {
         _learnedRules.addAll(board.rules.map((rule) => rule.kind));
         if (board.fog != FogKind.none) _learnedFog.add(board.fog);
+        _onAuthoredClear(board.id);
       }
     }
     final contributed = {
@@ -1961,6 +2291,14 @@ class Campaign {
     final candidate = boardsById[id];
     if (candidate == null || !_isAvailable(candidate) || board.id == id)
       return false;
+    if (id == 'renban') {
+      if (_shatter == null) {
+        beginShatter();
+        breakRemaining();
+      } else if (!_shatter!.assembled) {
+        return false;
+      }
+    }
     _returnBoard = null;
     _show(_load(id));
     return true;
@@ -2005,6 +2343,7 @@ class Campaign {
       _releaseOffer(offer);
     }
     _current.pausedAt = _clock;
+    _residentAddresses.clear();
     _current = next;
     final paused = next.pausedAt;
     if (paused != null) {
@@ -2023,6 +2362,7 @@ class Campaign {
   }
 
   void retry() {
+    if (board.id == 'renban' && retryShatter()) return;
     final id = board.id;
     _progress.remove(id);
     _current = _load(id);
@@ -2060,8 +2400,14 @@ class Campaign {
     String? companionId,
     bool keepSelectedCompanion = true,
     Map<LegacyUpgrade, int> upgrades = const {},
+    String? transactionId,
   }) {
+    if (transactionId != null &&
+        _prestigeTransactions[transactionId] == runId) {
+      return true;
+    }
     if (!completed) return false;
+    final oldRunId = runId;
     final payout = prestigePayout;
     final selected =
         companionId ?? (keepSelectedCompanion ? _companionChoice : null);
@@ -2099,6 +2445,46 @@ class Campaign {
       },
       'clears': _cleared.toList(),
       'companion': retained?.id,
+      'population': _communalResidents.toList(),
+      'bonds': [for (final bond in _bonds.values) bond.toJson()],
+      'orders': [
+        for (final entry in _orderProgress.entries)
+          if (entry.value.completed) entry.key.name,
+      ],
+      'hallWorkers': _hallWorkers.toList(),
+      'pinnedGoal': _pinnedGoal,
+      'landmarks': [
+        for (final witness in _landmarkWitnesses.values)
+          {
+            'runId': witness.runId,
+            'boardId': witness.boardId,
+            'eventId': witness.eventId,
+            'workerId': witness.workerId,
+            'workerName': witness.workerName,
+            'eventKind': witness.eventKind.name,
+            'visibleResult': witness.visibleResult,
+          },
+      ],
+      'ceremonies': {
+        for (final route in _ceremonySteps.keys)
+          route: {
+            'steps': _ceremonySteps[route]!.toList(),
+            'dedication': _dedications[route],
+          },
+      },
+      'projectWorkers': {
+        for (final entry in _projectWorkers.entries)
+          entry.key: entry.value.toList(),
+      },
+      'memorial': _memorial == null
+          ? null
+          : {
+              'runId': _memorial!.runId,
+              'recipientId': _memorial!.recipientId,
+              'recipientName': _memorial!.recipientName,
+              'fitterIds': _memorial!.fitterIds.toList(),
+              'glyphIds': _memorial!.glyphIds,
+            },
     });
     if (this.charter != Charter.standard) _creditedCharters.add(this.charter);
     _creditedRoutes.addAll(routeIds);
@@ -2122,11 +2508,49 @@ class Campaign {
     _assignments.clear();
     _restock.clear();
     _materials.clear();
+    _construction.clear();
     _materialQueue.clear();
     _materialJobs.clear();
     _claimedGlyphs.clear();
+    weather._restore({});
     _built.clear();
     _hallWorkers.clear();
+    _shatter = null;
+    _populationSequence = 0;
+    _arrivalCredits = 0;
+    _arrivalsPaused = false;
+    _populationAccountedAt = 0;
+    _populationRemainderMs = 0;
+    _arrivalGrants.clear();
+    _communalResidents.clear();
+    _bonds.clear();
+    _socialMoments.clear();
+    _socialActiveMs = 0;
+    _lastSocialOpportunityAt = -8000;
+    _socialHandoffJobs.clear();
+    _torchCrew.clear();
+    _residentAddresses.clear();
+    _pinnedGoal = null;
+    _orderProgress.clear();
+    _presets.clear();
+    _batchSequence = 0;
+    _batchOpenedBy = null;
+    _batchDelivered.clear();
+    _batchRanks.clear();
+    _settledBatches.clear();
+    _directShatterPlacements.clear();
+    _landmarkWitnesses.clear();
+    _ceremonySteps.clear();
+    _dedications.clear();
+    _projectWorkers.clear();
+    _padReservationTiles.clear();
+    _settledInstallations.clear();
+    _practiceMaterials.clear();
+    _memorialRecipientId = null;
+    _memorial = null;
+    _nurtureCommands.clear();
+    _discoveryCommands.clear();
+    _lastWorkerTask.clear();
     _returnBoard = null;
     _companion = retained;
     _companionChoice = retained?.id;
@@ -2169,6 +2593,8 @@ class Campaign {
       _current = _load('growth-5');
       _dispatch();
     }
+    if (transactionId != null) _prestigeTransactions[transactionId] = runId;
+    _prestigeTransactions['run:$oldRunId'] = runId;
     _changed();
     return true;
   }

@@ -85,6 +85,7 @@ class LibraryStore extends ChangeNotifier {
   final bool _includeAuthored;
   final _entries = <String, LibraryEntry>{};
   final _downloads = <String, LibraryDownload>{};
+  final _archives = <String, LibraryDownload>{};
   final _saves = <String, LibrarySave>{};
   final _latest = <String, LibrarySave>{};
   final _jobs = <String, LibraryJob>{};
@@ -99,6 +100,14 @@ class LibraryStore extends ChangeNotifier {
   Future<void>? _closing;
   bool _disposed = false;
   bool syncing = false;
+  bool get opensSavedShelf => _prefs['savedShelf'] == true;
+
+  Future<void> rememberShelf(bool saved) async {
+    if (opensSavedShelf == saved) return;
+    _prefs['savedShelf'] = saved;
+    await _persistPreferences();
+  }
+
   bool get automatic => _prefs['automatic'] as bool? ?? false;
   bool get complete => _prefs['listed'] == true;
   int get pages => _prefs['pages'] as int? ?? 0;
@@ -151,11 +160,14 @@ class LibraryStore extends ChangeNotifier {
         (key, value) => MapEntry(key, LibraryEntry.fromJson(value)),
       ),
     );
-    _downloads.addAll(
-      results[1].map(
-        (key, value) => MapEntry(key, LibraryDownload.fromJson(value)),
-      ),
-    );
+    for (final item in results[1].entries) {
+      final download = LibraryDownload.fromJson(item.value);
+      if (item.key.contains('|archive|')) {
+        _archives[item.key] = download;
+      } else {
+        _downloads[item.key] = download;
+      }
+    }
     _saves.addAll(
       results[2].map(
         (key, value) => MapEntry(key, LibrarySave.fromJson(value)),
@@ -219,6 +231,37 @@ class LibraryStore extends ChangeNotifier {
         );
       }
     }
+    await _reEvaluateRetainedPackages();
+  }
+
+  Future<void> _reEvaluateRetainedPackages() async {
+    for (final item in _downloads.entries.toList()) {
+      final old = item.value;
+      final provenance = old.provenance;
+      final payload = provenance['sourcePayload'] as String?;
+      final version = provenance['resolverVersion'] as int? ?? 0;
+      if (payload == null || version >= LibraryImport.resolverVersion) continue;
+      final decoded = LibraryImport.decode(old.entry, payload);
+      if (decoded == null) continue;
+      final refreshed = LibraryDownload(
+        decoded.entry,
+        board: decoded.board,
+        refs: decoded.refs,
+        diagram: old.diagram,
+        manual: decoded.manual,
+        finalCheck: decoded.finalCheck,
+        definition: decoded.definition,
+        supportReasons: decoded.supportReasons,
+        assetManifest: old.assetManifest,
+        provenance: {
+          ...provenance,
+          'resolverVersion': LibraryImport.resolverVersion,
+          'reEvaluatedOffline': true,
+        },
+      );
+      await _db.write('downloads', item.key, refreshed.toJson());
+      _downloads[item.key] = refreshed;
+    }
   }
 
   Future<List<LibraryEntry>> _catalogSeed() async {
@@ -254,6 +297,9 @@ class LibraryStore extends ChangeNotifier {
 
   Iterable<LibraryEntry> get entries => _entries.values;
   Iterable<LibraryJob> get jobs => _jobs.values;
+  Iterable<LibraryDownload> archivedDownloads(String id) => _archives.entries
+      .where((item) => item.key.startsWith('$id|archive|'))
+      .map((item) => item.value);
   LibraryEntry? entry(String id) => _entries[id];
   LibraryDownload? download(String id) =>
       _downloads[id] ??
@@ -813,7 +859,10 @@ class LibraryStore extends ChangeNotifier {
               (entry) =>
                   !entry.authored &&
                   !entry.withdrawn &&
-                  !_downloads.containsKey(entry.id) &&
+                  (!_downloads.containsKey(entry.id) ||
+                      (entry.revision.isNotEmpty &&
+                          _downloads[entry.id]!.entry.revision !=
+                              entry.revision)) &&
                   !_jobs.containsKey(entry.id) &&
                   !_dismissed.contains(entry.id) &&
                   _settled[entry.id] != entry.revision,
@@ -822,9 +871,7 @@ class LibraryStore extends ChangeNotifier {
           ..sort(_newest);
     for (final entry in missing.take(10 - active)) {
       if (!automatic || _disposed) break;
-      if (_jobs.containsKey(entry.id) ||
-          _downloads.containsKey(entry.id) ||
-          _dismissed.contains(entry.id))
+      if (_jobs.containsKey(entry.id) || _dismissed.contains(entry.id))
         continue;
       await _putJob(
         LibraryJob(entry.id, entry.revision, false, LibraryJobState.queued),
@@ -939,14 +986,26 @@ class LibraryStore extends ChangeNotifier {
       if (error.retry) rethrow;
     }
     if (_disposed || !_jobAllowed(id)) return;
-    if (result == null && entry.diagram != null && entry.rules.isNotEmpty) {
+    if ((result == null ||
+            result.availability == LibraryAvailability.original) &&
+        entry.diagram != null &&
+        entry.rules.isNotEmpty) {
       final link = Uri.tryParse(entry.diagram!);
       if (link != null && isLibraryDiagramLink(link)) {
         final response = await _fetch(link);
         if (response.status == 200 && await _decodeImage(response.bytes)) {
+          final retained = result;
           result = LibraryDownload(
-            entry,
+            retained?.entry ?? entry,
+            board: retained?.board,
+            refs: retained?.refs ?? const [],
             diagram: base64Encode(response.bytes),
+            manual: retained?.manual ?? false,
+            finalCheck: retained?.finalCheck ?? false,
+            definition: retained?.definition,
+            provenance: retained?.provenance ?? const {},
+            supportReasons: retained?.supportReasons ?? const [],
+            assetManifest: retained?.assetManifest ?? const [],
           );
         } else if (response.status == 429 || response.status >= 500) {
           requireLibraryResponse(response);
@@ -969,7 +1028,22 @@ class LibraryStore extends ChangeNotifier {
     }
     final logged = await _db.transaction(() async {
       if (!_jobAllowed(id)) return false;
-      if (result != null) await _db.write('downloads', id, result.toJson());
+      if (result != null) {
+        final previous = _downloads[id];
+        final oldFingerprint = previous?.provenance['fingerprint'] as String?;
+        final newFingerprint = result.provenance['fingerprint'] as String?;
+        if (previous != null &&
+            oldFingerprint != null &&
+            newFingerprint != null &&
+            oldFingerprint != newFingerprint) {
+          await _db.write(
+            'downloads',
+            '$id|archive|$oldFingerprint',
+            previous.toJson(),
+          );
+        }
+        await _db.write('downloads', id, result.toJson());
+      }
       await _db.write('preferences', 'source', {
         ..._prefs,
         'dismissed': _dismissed.toList(),
@@ -980,7 +1054,18 @@ class LibraryStore extends ChangeNotifier {
     });
     if (!logged) return;
     _settled[id] = entry.revision;
-    if (result != null) _downloads[id] = result;
+    if (result != null) {
+      final previous = _downloads[id];
+      final oldFingerprint = previous?.provenance['fingerprint'] as String?;
+      final newFingerprint = result.provenance['fingerprint'] as String?;
+      if (previous != null &&
+          oldFingerprint != null &&
+          newFingerprint != null &&
+          oldFingerprint != newFingerprint) {
+        _archives['$id|archive|$oldFingerprint'] = previous;
+      }
+      _downloads[id] = result;
+    }
     _jobs.remove(id);
   }
 

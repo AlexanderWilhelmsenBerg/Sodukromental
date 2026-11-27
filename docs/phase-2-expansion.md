@@ -2,7 +2,7 @@
 
 # Phase 2 expansion · The colony lives on the board
 
-**Proposed expansion for the next debug build.** Based on player feedback on debug `0.1.0+1`, built from `5083583`. The team checked repository `29c8940` and public puzzle sources on 26 November 2026. The earlier “Phase 2 · First playable build” belongs to the [debug register](debug-release-slices.md). It specifies changes for the next build. The [existing APK and handoff](debug-handoff.md) describe the build testers have today.
+This expansion was specified from feedback on Android debug `0.1.0+1`. The playtest guide tracks the implementation in `0.2.0+3`. The earlier phase numbered “Phase 2 · First playable build” belongs to the original release register. [Current debug handoff](phase-2-debug-handoff.md) · [Original debug register](debug-release-slices.md)
 
 | Read this for | Specification |
 | --- | --- |
@@ -74,7 +74,7 @@ Before entering, show **Torches 1/2** (or the applicable count), list actual nam
 
 ## Slices and review gates
 
-All rows are **specified**, with implementation and runtime acceptance pending. The story, mechanics, UI/UX and game-builder reviewers each receive the slice ID, player journey, build revision and reproduction. The coordinator reconciles findings and returns a concrete change and retest to the owning agent. The two source researchers independently check player identity and download-path fixtures. A stage ends when its listed scenario passes. Keep discovery/balance observations separate from data-loss, unsolvable-board and false-offline defects.
+Use these scenarios to review the expansion against the debug handoff. The story, mechanics, UI/UX and game-builder reviewers each receive the slice ID, player journey, build revision and reproduction. The coordinator reconciles findings and returns a concrete change and retest to the owning agent. The two source researchers independently check player identity and download-path fixtures. A stage ends when its listed scenario passes. Keep discovery/balance observations separate from data-loss, unsolvable-board and false-offline defects.
 
 | Stage / slice | Owner and dependency | Acceptance scenario |
 | --- | --- | --- |

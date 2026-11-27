@@ -12,6 +12,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'brand.dart';
 import 'campaign.dart';
 import 'colony_screen.dart';
+import 'colony_archive.dart';
 import 'creatures.dart';
 import 'creature_view.dart';
 import 'hum.dart';
@@ -147,7 +148,7 @@ class GameSession {
     this.transport,
     this.updates,
   );
-  final Campaign run;
+  Campaign run;
   final Map<String, dynamic> settings;
   final PackageInfo package;
   final http.Client transport;
@@ -178,19 +179,45 @@ class _GameHomeState extends State<GameHome> with WidgetsBindingObserver {
   late int tab = player.settings['destination'] == 'sudoku' ? 1 : 0;
   bool foreground = true, dirty = false, saving = false;
   bool saveFailed = false, invited = false, calledBack = false;
+  bool _archiving = false;
+  Completer<void>? _writer;
   bool get motion =>
       player.settings['reduceMotion'] == true ||
       MediaQuery.disableAnimationsOf(context);
   bool get tilt => player.settings['tilt'] != false;
+  final _torchbearer = ValueNotifier<Creature?>(null);
+
+  void _updateVisitor() {
+    if (tab != 1 ||
+        !run.hasEverClearedHalo ||
+        player.settings['torchbearers'] == false) {
+      _torchbearer.value = null;
+      return;
+    }
+    final occupied = {
+      ...run.jobs.map((job) => job.workerId),
+      ...run.offers.map((offer) => offer.workerId),
+    };
+    if (run.board.fog != FogKind.none)
+      occupied.addAll(run.fogStaffing.assignedWorkerIds);
+    _torchbearer.value = run.creatures
+        .where((c) => !occupied.contains(c.id))
+        .firstOrNull;
+  }
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     run.onChanged = _changed;
+    _updateVisitor();
     run.tick(DateTime.now(), offline: true);
     timer = Timer.periodic(const Duration(milliseconds: 350), (_) {
-      if (foreground) run.tick(DateTime.now());
+      if (foreground && !_archiving)
+        run.tick(
+          DateTime.now(),
+          colonyVisible: tab == 0 && ModalRoute.of(context)?.isCurrent == true,
+        );
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
@@ -207,14 +234,20 @@ class _GameHomeState extends State<GameHome> with WidgetsBindingObserver {
   }
 
   void _changed() {
+    _updateVisitor();
     dirty = true;
     if (!saving) unawaited(_flush());
     if (mounted) setState(() {});
   }
 
   Future<void> _flush() async {
-    if (saving) return;
+    if (_archiving) return;
+    if (saving) {
+      await _writer?.future;
+      return;
+    }
     saving = true;
+    _writer = Completer<void>();
     try {
       while (dirty) {
         dirty = false;
@@ -226,6 +259,34 @@ class _GameHomeState extends State<GameHome> with WidgetsBindingObserver {
       if (mounted) setState(() => saveFailed = true);
     } finally {
       saving = false;
+      _writer?.complete();
+      _writer = null;
+    }
+  }
+
+  Future<bool> _archive(bool Function(Campaign) command) async {
+    if (_archiving) return false;
+    setState(() => _archiving = true);
+    try {
+      await _writer?.future;
+      final next = await saveColonyTransition(
+        run,
+        command,
+        (snapshot) => widget.db.put('campaign', snapshot),
+      );
+      if (next == null || !mounted) return false;
+      run.onChanged = null;
+      player.run = next;
+      next.onChanged = _changed;
+      dirty = saveFailed = false;
+      _updateVisitor();
+      setState(() {});
+      return true;
+    } catch (_) {
+      if (mounted) setState(() => saveFailed = true);
+      return false;
+    } finally {
+      if (mounted) setState(() => _archiving = false);
     }
   }
 
@@ -242,7 +303,7 @@ class _GameHomeState extends State<GameHome> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && !foreground) {
       foreground = true;
-      run.tick(DateTime.now(), offline: true);
+      if (!_archiving) run.tick(DateTime.now(), offline: true);
       unawaited(_autoUpdate());
     } else if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
@@ -255,6 +316,7 @@ class _GameHomeState extends State<GameHome> with WidgetsBindingObserver {
   @override
   void dispose() {
     timer.cancel();
+    _torchbearer.dispose();
     player.transport.close();
     library.then((value) => value.close()).ignore();
     run.onChanged = null;
@@ -267,6 +329,7 @@ class _GameHomeState extends State<GameHome> with WidgetsBindingObserver {
       tab = value;
       invited = calledBack = false;
       player.settings['destination'] = value == 0 ? 'colony' : 'sudoku';
+      _updateVisitor();
     });
     unawaited(_preferences());
   }
@@ -282,15 +345,13 @@ class _GameHomeState extends State<GameHome> with WidgetsBindingObserver {
     unawaited(_preferences());
     final helper = await Navigator.of(context).push<Creature>(
       MaterialPageRoute(
-        builder: (_) => CreatureCreatorScreen(
+        builder: (_) => EcologyCreatureCreatorScreen(
           milestone: run.growthMilestone,
           quote: run.hatchPrice,
           onHatch: (id, recipe, price) => run.hatch(id, recipe, quote: price),
           dna: run.dna,
           rna: run.rna,
-          occupied: run.creatures
-              .where((c) => c.isAmoeba || !c.memory.retained)
-              .length,
+          occupied: run.personalBedOccupancy,
           housing: run.housing,
           oneHelper: run.charter == Charter.oneHelper,
           reducedMotion: motion,
@@ -320,6 +381,17 @@ class _GameHomeState extends State<GameHome> with WidgetsBindingObserver {
           onChanged: _changed,
           reducedMotion: motion,
           onEncourage: () => run.encourage(helper.id),
+          ecologyMilestone: run.growthMilestone,
+          onNurture: (choice) => run.nurture(
+            'nurture:${run.runId}:${helper.id}:${choice.id}',
+            helper.id,
+            choice,
+          ),
+          onDiscover: (secretId) => run.discoverCreature(
+            'discover:${run.runId}:${helper.id}:$secretId',
+            helper.id,
+            secretId,
+          ),
           onEditRecipe: helper.isAmoeba
               ? null
               : () {
@@ -338,6 +410,7 @@ class _GameHomeState extends State<GameHome> with WidgetsBindingObserver {
           player: player,
           library: library,
           settingsChanged: () {
+            _updateVisitor();
             setState(() {});
             unawaited(_preferences());
           },
@@ -349,7 +422,7 @@ class _GameHomeState extends State<GameHome> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final pet = run.companion;
-    return Scaffold(
+    final home = Scaffold(
       appBar: AppBar(
         leadingWidth: 52,
         leading: const Padding(
@@ -432,6 +505,7 @@ class _GameHomeState extends State<GameHome> with WidgetsBindingObserver {
                     enabled: tab == 0,
                     child: ColonyScreen(
                       campaign: run,
+                      onArchive: _archive,
                       onChanged: () {},
                       onOpenSettings: _settings,
                       onOpenCreator: _creator,
@@ -447,6 +521,8 @@ class _GameHomeState extends State<GameHome> with WidgetsBindingObserver {
                         return LibraryScreen(
                           store: store,
                           active: tab == 1,
+                          torchbearer: _torchbearer,
+                          reduceMotion: motion,
                           startSync: widget.syncLibrary,
                           canColonyPlay: (b) => run.canOpenLibrarySize(b.size),
                           onColonyPlay: (b) {
@@ -492,6 +568,7 @@ class _GameHomeState extends State<GameHome> with WidgetsBindingObserver {
         ],
       ),
     );
+    return AbsorbPointer(absorbing: _archiving, child: home);
   }
 }
 
@@ -531,6 +608,15 @@ class _SettingsState extends State<_Settings> {
                 ? const ListTile(title: Text('Opening library settings…'))
                 : LibrarySettingsTile(store: snapshot.requireData),
           ),
+          if (p.run.hasEverClearedHalo)
+            SwitchListTile(
+              title: const Text('Colony torchbearers'),
+              subtitle: const Text(
+                'Available residents carry lamps in fog puzzles.',
+              ),
+              value: p.settings['torchbearers'] != false,
+              onChanged: (v) => pref('torchbearers', v),
+            ),
           const _Label('Play'),
           SwitchListTile(
             title: const Text('Tilt gravity'),

@@ -1,7 +1,7 @@
 name: sodukromental
 description: A pocket Sudoku library and a colony of number-gathering creatures.
 publish_to: none
-version: 0.1.0+1
+version: 0.2.0+3
 environment:
   sdk: '>=3.12.0 <4.0.0'
   flutter: '>=3.44.4'

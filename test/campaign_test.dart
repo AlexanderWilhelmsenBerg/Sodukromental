@@ -267,7 +267,9 @@ void main() {
       expect(drive.run.masteredRules, contains(RuleKind.kropkiWhite));
       expect(
         drive.run.almanacCrew('night-market'),
-        contains(drive.run.creatures.single.name),
+        contains(
+          drive.run.creatures.firstWhere((worker) => worker.isAmoeba).name,
+        ),
       );
       expect(
         drive.run.projects.where((item) => item.id.startsWith('cosmetic-')),
@@ -407,12 +409,13 @@ void main() {
     run = _reload(run);
     final tomorrow = _epoch.add(const Duration(days: 1));
     run.tick(tomorrow, offline: true);
-    expect(run.rna, 15);
+    expect(run.rna, 8);
+    expect(run.productionBatch!.deliveredCycles[4], 6);
     run = _reload(run);
     run.tick(tomorrow, offline: true);
-    expect(run.rna, 15);
+    expect(run.rna, 8);
     run.tick(tomorrow.add(const Duration(seconds: 10)));
-    expect(run.rna, 16);
+    expect(run.rna, 8);
   });
 
   test('starter rewards buy both producers and an idempotent first hatch', () {
@@ -481,12 +484,14 @@ void main() {
     }
   });
 
-  test('all three routes end with the starter alone and keep first clears', () {
+  test('all three routes keep one personal founder and fill communal beds', () {
     for (final route in ['lines', 'outside', 'positions']) {
       final run = Campaign(now: _epoch);
       _opening(run);
       final drive = _Drive(run)..route(route, buildFirst: route == 'lines');
-      expect(drive.run.creatures, hasLength(1));
+      expect(drive.run.personalBedOccupancy, 1);
+      expect(drive.run.population.communalResidents, 12);
+      expect(drive.run.creatures, hasLength(13));
       expect(drive.run.clearedBoards, hasLength(16));
       expect(drive.run.prestigePayout, 3);
       final dna = drive.run.dna;
@@ -504,7 +509,9 @@ void main() {
         final run = Campaign(now: _epoch);
         _opening(run);
         final drive = _Drive(run)..route('lines');
-        final founder = drive.run.creatures.single;
+        final founder = drive.run.creatures.firstWhere(
+          (worker) => worker.isAmoeba,
+        );
         expect(drive.run.keepCompanion(founder.id), isTrue);
         expect(
           drive.run.prestige(

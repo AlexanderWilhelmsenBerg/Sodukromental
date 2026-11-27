@@ -1,30 +1,156 @@
 import 'dart:math' as math;
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 
 import 'library_models.dart';
 
+double libraryArtworkMargin(
+  LibraryDownload puzzle,
+  LibraryPuzzleDefinition definition,
+) {
+  final refs = puzzle.refs.isNotEmpty ? puzzle.refs : definition.layers;
+  bool outside(dynamic point) =>
+      point is List &&
+      point.length >= 2 &&
+      ((point[0] as num) < 0 ||
+          (point[1] as num) < 0 ||
+          (point[0] as num) > definition.height ||
+          (point[1] as num) > definition.width);
+  for (final ref in refs) {
+    if (outside(ref['center'])) return .8;
+    if (ref['wayPoints'] case final List points) {
+      if (points.any(outside)) return .8;
+    }
+  }
+  return 0;
+}
+
 class LibraryArtwork extends StatelessWidget {
-  const LibraryArtwork(this.puzzle, {super.key});
+  const LibraryArtwork(this.puzzle, {super.key, this.definition, this.visible});
   final LibraryDownload puzzle;
+  final LibraryPuzzleDefinition? definition;
+  final Set<int>? visible;
 
   @override
-  Widget build(BuildContext context) =>
-      CustomPaint(painter: _ArtworkPainter(puzzle));
+  Widget build(BuildContext context) {
+    final native = definition ?? puzzle.nativeDefinition;
+    return LayoutBuilder(
+      builder: (context, bounds) {
+        final margin = native == null
+            ? 0.0
+            : libraryArtworkMargin(puzzle, native);
+        final width = native?.width ?? puzzle.board!.size;
+        final height = native?.height ?? width;
+        final step = math.min(
+          bounds.maxWidth / (width + margin * 2),
+          bounds.maxHeight / (height + margin * 2),
+        );
+        final refs = puzzle.refs.isNotEmpty
+            ? puzzle.refs
+            : native?.layers ?? const <Map<String, dynamic>>[];
+        final assets = {
+          for (final item in puzzle.assetManifest) item['id']: item,
+        };
+        return Stack(
+          clipBehavior: Clip.none,
+          fit: StackFit.expand,
+          children: [
+            CustomPaint(painter: _ArtworkPainter(puzzle, native, visible)),
+            for (final ref in refs)
+              if (_assetId(ref) case final id?)
+                if (assets[id]?['data'] case final String data)
+                  Positioned(
+                    left:
+                        (margin + _coordinate(ref['center'], 1)) * step -
+                        _dimension(ref['width'], 1) * step / 2,
+                    top:
+                        (margin + _coordinate(ref['center'], 0)) * step -
+                        _dimension(ref['height'], 1) * step / 2,
+                    width: _dimension(ref['width'], 1) * step,
+                    height: _dimension(ref['height'], 1) * step,
+                    child: ExcludeSemantics(
+                      excluding: !_refRevealed(ref, native),
+                      child: Image.memory(
+                        base64Decode(data),
+                        fit: BoxFit.contain,
+                        semanticLabel:
+                            ref['alt']?.toString() ??
+                            'Locally saved puzzle clue image',
+                        errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                      ),
+                    ),
+                  ),
+          ],
+        );
+      },
+    );
+  }
+
+  static String? _assetId(Map<String, dynamic> ref) {
+    for (final key in const [
+      'image',
+      'imageUrl',
+      'src',
+      'url',
+      'backgroundImage',
+    ]) {
+      final value = ref[key];
+      if (value is String && value.startsWith('asset:'))
+        return value.substring(6);
+    }
+    return null;
+  }
+
+  static double _coordinate(dynamic center, int index) =>
+      center is List && center.length > index
+      ? (center[index] as num).toDouble()
+      : 0;
+  static double _dimension(dynamic value, double fallback) =>
+      value is num ? value.toDouble() : fallback;
+
+  bool _refRevealed(
+    Map<String, dynamic> ref,
+    LibraryPuzzleDefinition? definition,
+  ) {
+    if (visible == null || definition == null) return true;
+    if (ref['cells'] case final List cells when cells.isNotEmpty) {
+      return cells.cast<List>().every(
+        (cell) => visible!.contains(
+          (cell[0] as num).toInt() * definition.width +
+              (cell[1] as num).toInt(),
+        ),
+      );
+    }
+    return true;
+  }
 }
 
 class _ArtworkPainter extends CustomPainter {
-  _ArtworkPainter(this.puzzle);
+  _ArtworkPainter(this.puzzle, this.definition, this.visible);
   final LibraryDownload puzzle;
+  final LibraryPuzzleDefinition? definition;
+  final Set<int>? visible;
   final _ink = const Color(0xff24262a);
 
   @override
   void paint(Canvas canvas, Size size) {
-    final grid = puzzle.board!.size;
-    final step = size.shortestSide / grid;
+    final grid = definition?.width ?? puzzle.board!.size;
+    final margin = definition == null
+        ? 0.0
+        : libraryArtworkMargin(puzzle, definition!);
+    final height = definition?.height ?? grid;
+    final step = math.min(
+      size.width / (grid + margin * 2),
+      size.height / (height + margin * 2),
+    );
+    _origin = Offset(margin * step, margin * step);
     canvas.save();
-    canvas.clipRect(Offset.zero & size);
-    for (final item in puzzle.refs) {
+    final refs = puzzle.refs.isNotEmpty
+        ? puzzle.refs
+        : definition?.layers ?? const <Map<String, dynamic>>[];
+    for (final item in refs) {
+      if (!_itemVisible(item)) continue;
       switch (item['layer']) {
         case 'underlays':
         case 'overlays':
@@ -37,6 +163,16 @@ class _ArtworkPainter extends CustomPainter {
       }
     }
     canvas.restore();
+  }
+
+  Offset _origin = Offset.zero;
+
+  bool _itemVisible(Map<String, dynamic> item) {
+    if (visible == null) return true;
+    if (item['hidden'] == true) return false;
+    // Preserve an incoming visible segment, but never expose a wholly covered
+    // clue. Geometry without cell metadata is clipped by the opaque fog layer.
+    return true;
   }
 
   void _shape(Canvas canvas, Map<String, dynamic> item, double step) {
@@ -104,8 +240,8 @@ class _ArtworkPainter extends CustomPainter {
       ..strokeWidth = step * .035;
     final fill = _color(item['backgroundColor'], Colors.transparent);
     for (final (row, col) in cells) {
-      final x = col * step;
-      final y = row * step;
+      final x = _origin.dx + col * step;
+      final y = _origin.dy + row * step;
       if (fill.a > 0)
         canvas.drawRect(Rect.fromLTWH(x, y, step, step), Paint()..color = fill);
       final left = x + dx;
@@ -137,7 +273,7 @@ class _ArtworkPainter extends CustomPainter {
       _text(
         canvas,
         value.toString(),
-        Offset((col + .23) * step, (row + .22) * step),
+        _origin + Offset((col + .23) * step, (row + .22) * step),
         step * .22,
         color,
       );
@@ -231,6 +367,7 @@ class _ArtworkPainter extends CustomPainter {
   }
 
   Offset _point(List position, double step) =>
+      _origin +
       Offset((position[1] as num) * step, (position[0] as num) * step);
   double _num(dynamic value, double defaultValue) =>
       (value is num ? value.toDouble() : double.tryParse('$value')) ??
@@ -250,5 +387,7 @@ class _ArtworkPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _ArtworkPainter oldDelegate) =>
-      oldDelegate.puzzle != puzzle;
+      oldDelegate.puzzle != puzzle ||
+      oldDelegate.visible != visible ||
+      oldDelegate.definition != definition;
 }

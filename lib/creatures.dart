@@ -1,5 +1,7 @@
 import 'dart:math' as math;
 
+part 'creature_ecology.dart';
+
 enum GrowthMilestone { opening, five, six, seven, eight, halo, arrows }
 
 enum GrowthGroup {
@@ -509,6 +511,7 @@ class CreatureRecipe {
   CreatureRecipe({
     Map<GrowthGroup, String> choices = const {},
     Iterable<WorkPerk> perks = const [],
+    this.ecologyPath,
   }) : choices = Map.unmodifiable(choices),
        perks = List.unmodifiable(perks);
 
@@ -523,6 +526,42 @@ class CreatureRecipe {
 
   final Map<GrowthGroup, String> choices;
   final List<WorkPerk> perks;
+  final EcologyPath? ecologyPath;
+
+  /// Phase 2's guided hatch. Unlike the legacy body editor, every visible
+  /// body feature is a projection of a stable life-path decision.
+  factory CreatureRecipe.ecology({
+    required CreatureFounder founder,
+    required String nicheId,
+    EcologyChoice? firstDecision,
+  }) {
+    var path = EcologyPath(founder: founder, nicheId: nicheId);
+    if (firstDecision != null) path = path.choose(firstDecision);
+    return CreatureRecipe(ecologyPath: path);
+  }
+
+  /// A deterministic, lineage-appropriate basic resident for colony grants.
+  factory CreatureRecipe.communal(
+    CreatureFounder founder, {
+    int nicheIndex = 0,
+  }) {
+    final niches = ecologyNiches
+        .where((niche) => niche.founder == founder)
+        .toList(growable: false);
+    final niche = niches[nicheIndex.abs() % niches.length];
+    return CreatureRecipe.ecology(
+      founder: founder,
+      nicheId: niche.id,
+      firstDecision: EcologyChoice.values
+          .where((choice) => choice.family == DecisionFamily.digit)
+          .elementAt(nicheIndex.abs() % 2),
+    );
+  }
+
+  List<WorkPerk> get effectivePerks =>
+      List.unmodifiable({...perks, ...?ecologyPath?.projectedPerks});
+
+  CreatureWorkProfile get workProfile => CreatureWorkProfile.fromRecipe(this);
 
   static int perkLimit(GrowthMilestone milestone) => switch (milestone) {
     GrowthMilestone.opening => 0,
@@ -531,16 +570,28 @@ class CreatureRecipe {
     GrowthMilestone.arrows => 3,
   };
 
-  CreatureRecipe withChoice(GrowthNode node) =>
-      CreatureRecipe(choices: {...choices, node.group: node.id}, perks: perks);
+  CreatureRecipe withChoice(GrowthNode node) => CreatureRecipe(
+    choices: {...choices, node.group: node.id},
+    perks: perks,
+    ecologyPath: ecologyPath,
+  );
 
-  CreatureRecipe withoutChoice(GrowthGroup group) =>
-      CreatureRecipe(choices: {...choices}..remove(group), perks: perks);
+  CreatureRecipe withoutChoice(GrowthGroup group) => CreatureRecipe(
+    choices: {...choices}..remove(group),
+    perks: perks,
+    ecologyPath: ecologyPath,
+  );
 
   CreatureRecipe withPerks(Iterable<WorkPerk> values) =>
-      CreatureRecipe(choices: choices, perks: values);
+      CreatureRecipe(choices: choices, perks: values, ecologyPath: ecologyPath);
+
+  CreatureRecipe withEcologyPath(EcologyPath path) =>
+      CreatureRecipe(choices: choices, perks: perks, ecologyPath: path);
 
   List<String> validate(GrowthMilestone milestone) {
+    if (ecologyPath case final EcologyPath path) {
+      return path.validate(milestone);
+    }
     final errors = <String>[];
     for (final group in GrowthGroup.values.take(3)) {
       if (!choices.containsKey(group))
@@ -586,6 +637,11 @@ class CreatureRecipe {
           if (choices[group.name] case final String id) group: id,
       },
       perks: WorkPerk.values.where((perk) => perks.contains(perk.name)),
+      ecologyPath: json['ecologyPath'] is Map
+          ? EcologyPath.fromJson(
+              Map<String, dynamic>.from(json['ecologyPath'] as Map),
+            )
+          : null,
     );
   }
 
@@ -594,6 +650,7 @@ class CreatureRecipe {
       for (final entry in choices.entries) entry.key.name: entry.value,
     },
     'perks': [for (final perk in perks) perk.name],
+    if (ecologyPath != null) 'ecologyPath': ecologyPath!.toJson(),
   };
 }
 
@@ -610,6 +667,9 @@ class HatchPrice {
       (8 * scale).ceil() + 2 * extra,
     );
   }
+
+  /// Each newly filled nurture family costs the response increment only.
+  static const nurture = HatchPrice(1, 2);
 
   @override
   bool operator ==(Object other) =>
@@ -710,19 +770,47 @@ class Creature {
     required this.personality,
     required this.recipe,
     required this.appearance,
+    CreatureDisposition? disposition,
     CompanionMemory? memory,
-  }) : memory = memory ?? CompanionMemory();
+  }) : disposition = disposition ?? CreatureDisposition.legacy(personality),
+       memory = memory ?? CompanionMemory();
 
   final String id;
   String name;
   final int favorite;
   final bool isAmoeba;
   final Personality personality;
-  final CreatureRecipe recipe;
-  final CreatureAppearance appearance;
+  CreatureRecipe recipe;
+  CreatureAppearance appearance;
+  final CreatureDisposition disposition;
   final CompanionMemory memory;
 
-  List<WorkPerk> get perks => recipe.perks;
+  List<WorkPerk> get perks => recipe.effectivePerks;
+  CreatureWorkProfile get workProfile => recipe.workProfile;
+
+  bool canNurture(EcologyChoice choice, GrowthMilestone milestone) {
+    final path = recipe.ecologyPath;
+    if (path == null || path.decisions.containsKey(choice.family)) return false;
+    return path.choose(choice).validate(milestone).isEmpty;
+  }
+
+  /// Fills one previously empty family. Replacing an expressed response is a
+  /// branch for a future hatch, never an edit to this individual.
+  bool nurture(EcologyChoice choice, GrowthMilestone milestone) {
+    if (!canNurture(choice, milestone)) return false;
+    recipe = recipe.withEcologyPath(recipe.ecologyPath!.choose(choice));
+    appearance = CreatureAppearance(
+      palette: appearance.palette,
+      marking: appearance.marking,
+      eyeCount: appearance.eyeCount,
+      cheeks: appearance.cheeks,
+      parts: {
+        ...appearance.parts,
+        ecologyExpression(recipe.ecologyPath!.nicheId, choice).rigPart,
+      },
+    );
+    return true;
+  }
 
   factory Creature.amoeba(int runSeed) => Creature.generate(
     runSeed: runSeed,
@@ -759,6 +847,13 @@ class Creature {
       isAmoeba: amoeba,
       personality: Personality.values[draw(5, Personality.values.length)],
       recipe: recipe,
+      disposition: CreatureDisposition(
+        sociability: draw(11, 101),
+        curiosity: draw(12, 101),
+        tidiness: draw(13, 101),
+        patience: draw(14, 101),
+        boldness: draw(15, 101),
+      ),
       appearance: CreatureAppearance(
         palette: _palettes[draw(1, _palettes.length)],
         marking: const ['dots', 'stripe', 'diamond', 'freckles'][draw(2, 4)],
@@ -766,6 +861,7 @@ class Creature {
         cheeks: draw(6, 2) == 0,
         parts: [
           ...recipe.choices.values,
+          ...?recipe.ecologyPath?.projectedParts,
           if (!recipe.choices.containsKey(GrowthGroup.senses))
             const ['cheek-dots', 'small-feeler', 'scallop'][draw(7, 3)],
         ],
@@ -781,6 +877,13 @@ class Creature {
         isAmoeba: false,
         personality: Personality.curious,
         recipe: recipe,
+        disposition: const CreatureDisposition(
+          sociability: 65,
+          curiosity: 70,
+          tidiness: 50,
+          patience: 55,
+          boldness: 55,
+        ),
         appearance: CreatureAppearance(
           palette: CreatureAppearance.previewPalette,
           marking: 'dots',
@@ -794,6 +897,7 @@ class Creature {
                   ) ==
                   true)
                 id,
+            ...?recipe.ecologyPath?.projectedParts,
           ],
         ),
       );
@@ -810,6 +914,11 @@ class Creature {
     appearance: CreatureAppearance.fromJson(
       Map<String, dynamic>.from(json['appearance'] as Map),
     ),
+    disposition: json['disposition'] is Map
+        ? CreatureDisposition.fromJson(
+            Map<String, dynamic>.from(json['disposition'] as Map),
+          )
+        : null,
     memory: CompanionMemory.fromJson(
       Map<String, dynamic>.from(json['memory'] as Map? ?? {}),
     ),
@@ -823,6 +932,7 @@ class Creature {
     'personality': personality.name,
     'recipe': recipe.toJson(),
     'appearance': appearance.toJson(),
+    'disposition': disposition.toJson(),
     'memory': memory.toJson(),
   };
 }

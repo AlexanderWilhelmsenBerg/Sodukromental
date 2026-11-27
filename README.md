@@ -4,7 +4,7 @@ A portrait Sudoku game for Android. Slide tiles to free three missing 4s, hatch 
 
 The **Sudoku** tab opens independently of the colony. Browse the Logic Masters Deutschland catalog and the 28 original game boards, filter by rule, or look for a verified Cracking the Cryptic solve. Automatic puzzle-content downloads are off by default. The Library displays each puzzle’s available play, diagram, or source options.
 
-The [Phase 2 expansion specification](docs/phase-2-expansion.md) covers the next creature and civilization systems, board interactions, and Sodukromental’s own offline Sudoku player with SudokuPad-style controls.
+The Phase 2 debug build adds branching ecology hatches, living pixel villages and native offline solving tools. Residents fetch digits, carry torches along earned paths and build with letters from the screen. After classic 9×9, a Renban worm introduces the first variant with a practice example. [Phase 2 playtest guide](docs/phase-2-debug-handoff.md)
 
 ## Run locally
 
@@ -20,6 +20,6 @@ Build an installable tester APK with `flutter build apk --debug`. The GitHub Act
 
 ## Debug testing
 
-The [debug handoff](docs/debug-handoff.md) includes installation, verification and feedback scenarios. The [slice register](docs/debug-release-slices.md) tracks the implementation against the [release plan](docs/release-plan.md) and [game specification](docs/game-specification.md). Story, mechanics and UI/UX findings feed the [independent review](docs/agent-review.md).
+Use the [Phase 2 debug handoff](docs/phase-2-debug-handoff.md) for installation and playtest scenarios. The [Phase 1 handoff](docs/debug-handoff.md) documents the earlier build. The [slice register](docs/debug-release-slices.md) tracks the implementation against the [release plan](docs/release-plan.md) and [game specification](docs/game-specification.md). Story, mechanics and UI/UX findings feed the [independent review](docs/agent-review.md).
 
 Logic Masters puzzles credit their setters and link to their original pages. The bundled fonts include their licenses in `assets/fonts`.

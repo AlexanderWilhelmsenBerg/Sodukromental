@@ -117,6 +117,12 @@ void main() {
     final run = Campaign.fromJson(saved);
     expect(run.openBoard('renban'), isTrue);
     await tester.pumpWidget(_app(run, scale: 1.6));
+    await tester.pumpAndSettle();
+    final teacherPlay = find.widgetWithText(FilledButton, 'Play');
+    if (teacherPlay.evaluate().isNotEmpty) {
+      await tester.tap(teacherPlay);
+      await tester.pumpAndSettle();
+    }
     final empty = run.cells.indexOf(0);
     expect(empty, lessThan(run.board.size));
     final digit = run.tray.keys.first;
@@ -134,6 +140,86 @@ void main() {
     await tester.tap(target);
     await tester.pumpAndSettle();
     expect(run.cells[empty], digit);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('tile supply keeps fixed 3 by 3 positions and request states', (
+    tester,
+  ) async {
+    final saved = Campaign().toJson()..['clears'] = ['opening'];
+    final run = Campaign.fromJson(saved);
+    expect(run.openBoard('growth-5'), isTrue);
+    await tester.pumpWidget(_app(run));
+
+    expect(find.byKey(const ValueKey('tile-supply-grid')), findsOneWidget);
+    for (var digit = 1; digit <= 9; digit++) {
+      expect(
+        find.byKey(ValueKey('tray-$digit')),
+        digit <= 5 ? findsOneWidget : findsNothing,
+      );
+    }
+    expect(
+      find.bySemanticsLabel('Digit 6 unavailable on this board'),
+      findsOneWidget,
+    );
+    expect(
+      find.bySemanticsLabel('Digit 5, none available. Request 5'),
+      findsOneWidget,
+    );
+    final directCell = run.board.indices.firstWhere(
+      (index) =>
+          run.cells[index] == 0 &&
+          run.board.solution[index] < 5 &&
+          (run.tray[run.board.solution[index]] ?? 0) > 0,
+    );
+    final directDigit = run.board.solution[directCell];
+    final directCellFinder = find.byKey(ValueKey('cell-$directCell'));
+    await tester.ensureVisible(directCellFinder);
+    await tester.tap(directCellFinder);
+    await tester.pump();
+    final directStock = find.byKey(ValueKey('tray-$directDigit'));
+    await tester.ensureVisible(directStock);
+    await tester.tap(directStock);
+    await tester.pump();
+    expect(run.cells[directCell], directDigit);
+    final missingFive = find.byKey(const ValueKey('tray-5'));
+    await tester.ensureVisible(missingFive);
+    await tester.tap(missingFive);
+    await tester.pumpAndSettle();
+    expect(find.text('Request digits'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('on-hand order can bring an exact pad tile and take it back', (
+    tester,
+  ) async {
+    final saved = Campaign().toJson()
+      ..['clears'] = ['opening']
+      ..['creatures'] = [Creature.amoeba(41).toJson()];
+    final run = Campaign.fromJson(saved);
+    expect(run.openBoard('growth-5'), isTrue);
+    final tileId = run.trayTileIds[1]!.first;
+    await tester.pumpWidget(_app(run));
+
+    final request = find.text('Request digits');
+    await tester.ensureVisible(request.first);
+    await tester.tap(request.first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ChoiceChip, '1'));
+    await tester.pump();
+    await tester.tap(find.widgetWithText(SwitchListTile, 'Bring from pad'));
+    await tester.pump();
+    await tester.tap(find.widgetWithText(FilledButton, 'Bring from pad'));
+    await tester.pumpAndSettle();
+
+    expect(run.digitReservations, hasLength(1));
+    expect(run.digitReservations.single.tileId, tileId);
+    final useNow = find.text('Use now');
+    await tester.ensureVisible(useNow);
+    await tester.tap(useNow);
+    await tester.pump();
+    expect(run.digitReservations, isEmpty);
+    expect(run.trayTileIds[1], contains(tileId));
     expect(tester.takeException(), isNull);
   });
 

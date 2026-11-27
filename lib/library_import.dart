@@ -1,32 +1,102 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'boards.dart';
+import 'library_digest.dart';
 import 'library_models.dart';
 import 'library_source.dart';
 
 class LibraryImport {
+  static const resolverVersion = 2;
+
   static Future<LibraryDownload?> read(
     LibraryEntry entry,
     LibraryFetch fetch,
   ) async {
-    final content = Uri.tryParse(entry.content ?? '');
-    if (content == null || !isLibraryPayloadLink(content)) return null;
-    final id =
-        content.queryParameters['puzzleid'] ??
-        content.queryParameters['load'] ??
-        content.pathSegments.join('/');
-    if (id.isEmpty) return null;
-    var encoded = id;
-    if (content.host.endsWith('f-puzzles.com')) {
-      encoded = 'fpuz$id';
-    } else if (!RegExp(r'^(scl|ctc|fpuz|classic)').hasMatch(id)) {
-      if (!RegExp(r'^[\w-]+(/[\w-]+)*$').hasMatch(id)) return null;
-      final url = Uri.https('sudokupad.app', '/api/puzzle/$id');
-      final response = await fetch(url);
-      if (response.status == 404 || response.status == 410) return null;
-      encoded = requireLibraryResponse(response).text.trim();
+    final resolution = await resolve(entry, fetch);
+    if (resolution == null) return null;
+    final decoded = decode(entry, resolution.payload);
+    if (decoded == null) {
+      return LibraryDownload(
+        entry,
+        supportReasons: const [
+          'The verified puzzle package uses a format or capability that is not yet supported.',
+        ],
+        provenance: _provenance(resolution),
+      );
     }
-    return decode(entry, encoded);
+    final cached = await _cacheAssets(decoded.refs, fetch);
+    final definition = decoded.definition == null
+        ? null
+        : _definitionWithAssets(decoded.definition!, cached.$1, cached.$2);
+    return LibraryDownload(
+      decoded.entry,
+      board: decoded.board,
+      refs: cached.$1,
+      diagram: decoded.diagram,
+      manual: decoded.manual,
+      finalCheck: decoded.finalCheck,
+      definition: definition,
+      supportReasons: decoded.supportReasons,
+      assetManifest: [...decoded.assetManifest, ...cached.$2],
+      provenance: _provenance(resolution),
+    );
+  }
+
+  /// Resolves a supported share URL into puzzle bytes without ever treating a
+  /// player HTML shell as a package. The original URL remains available to the
+  /// caller as a stable retry/provenance key.
+  static Future<LibraryResolution?> resolve(
+    LibraryEntry entry,
+    LibraryFetch fetch, {
+    int maxRedirects = 5,
+  }) async {
+    final original = Uri.tryParse(entry.content ?? '');
+    if (original == null || !isLibraryPayloadLink(original)) return null;
+    var current = original;
+    final visited = <String>{};
+    for (var hop = 0; hop <= maxRedirects; hop++) {
+      final fpuzzlesId = current.queryParameters['id'];
+      if (current.host.endsWith('f-puzzles.com') && fpuzzlesId != null) {
+        final slug = fpuzzlesId;
+        if (!RegExp(r'^[\w-]+$').hasMatch(slug)) return null;
+        current = Uri.https('tinyurl.com', '/$slug');
+      }
+      if (!_safeShareUri(current) || !visited.add(current.toString())) {
+        return null;
+      }
+      final inline = _inlinePayload(current);
+      if (inline != null) {
+        if (!_validPuzzlePayload(entry, inline)) {
+          return null;
+        }
+        return LibraryResolution(original, current, inline, hop);
+      }
+      if (_aliasUri(current)) {
+        if (hop == maxRedirects) return null;
+        final response = await fetch(current);
+        if (response.status < 300 || response.status >= 400) return null;
+        final location = response.headers['location'];
+        if (location == null) return null;
+        final next = current.resolve(location);
+        if (!_safeShareUri(next)) return null;
+        current = next;
+        continue;
+      }
+      final lookup = _lookupKey(current);
+      if (lookup == null) return null;
+      final api = Uri.https(
+        'sudokupad.app',
+        '/api/puzzle/${lookup.map(Uri.encodeComponent).join('/')}',
+      );
+      final response = await fetch(api);
+      if (response.status == 404 || response.status == 410) return null;
+      final payload = requireLibraryResponse(response).text.trim();
+      if (_looksLikeHtml(payload) || !_validPuzzlePayload(entry, payload))
+        return null;
+      return LibraryResolution(original, api, payload, hop);
+    }
+    return null;
   }
 
   static LibraryDownload? decode(LibraryEntry entry, String encoded) {
@@ -78,71 +148,91 @@ class LibraryImport {
       'arrows',
       'underlays',
       'overlays',
+      'foglight',
+      'fogLights',
+      'fog',
+      'triggers',
+      'foglink',
+      'triggereffect',
+      'settings',
+      'symbols',
+      'width',
+      'height',
     };
     if (json.keys.any((key) => !supported.contains(key) && _hasData(json[key])))
       return null;
     final raw = json['cells'] as List;
     final size = raw.length;
-    if (size < 4 ||
-        size > 9 ||
+    if (size < 1 ||
+        size > 25 ||
         raw.any((row) => row is! List || row.length != size))
       return null;
     final metadata = (json['metadata'] as Map? ?? {}).cast<String, dynamic>();
-    if (metadata.keys.any(
-      (key) =>
-          RegExp(
-            'fog|trigger|background',
-            caseSensitive: false,
-          ).hasMatch(key) &&
-          _hasData(metadata[key]),
-    ))
-      return null;
     final rules = metadata['rules']?.toString() ?? entry.rules;
     final declaredStandard = RegExp(
       r'normal sudoku|standard sudoku|sudoku rules apply|sudoku-regeln|classic sudoku',
       caseSensitive: false,
     ).hasMatch(rules);
-    if (RegExp(
+    final allowsRowRepeats = RegExp(
       r'(?:rows? may repeat|empty cell \(which|no normal sudoku|normal sudoku rules do not apply|digits may be repeated within a row)',
       caseSensitive: false,
-    ).hasMatch(rules))
-      return null;
+    ).hasMatch(rules);
+    final allowsColumnRepeats = RegExp(
+      r'(?:columns? may repeat|digits may be repeated within a column)',
+      caseSensitive: false,
+    ).hasMatch(rules);
     final givens = <int>[];
+    final symbolicGivens = <String?>[];
     for (final row in raw.cast<List>()) {
       for (final cell in row) {
-        if (cell is! Map ||
-            cell.keys.any((key) => !['value', 'given'].contains(key)))
-          return null;
-        givens.add(
-          cell['given'] == false
-              ? 0
-              : int.tryParse('${cell['value'] ?? ''}') ?? 0,
-        );
+        if (cell is! Map) return null;
+        final given = cell['given'] == false || cell['value'] == null
+            ? null
+            : '${cell['value']}';
+        symbolicGivens.add(given);
+        givens.add(int.tryParse(given ?? '') ?? 0);
       }
     }
     final rawRegions = json['regions'] as List? ?? [];
-    if (rawRegions.length != size) return null;
+    final symbolicRegions = List<int?>.filled(size * size, null);
     final regions = List<int>.filled(size * size, -1);
     for (final (region, members) in rawRegions.indexed) {
-      if (members is! List || members.length != size) return null;
+      if (members is! List) return null;
       for (final position in members) {
         final cell = _sclCell(position, size);
         if (regions[cell] != -1) return null;
         regions[cell] = region;
+        symbolicRegions[cell] = region;
       }
     }
     final refs = <Map<String, dynamic>>[];
     final constraints = <VariantRule>[];
+    final legacyFogMetadata = <Map<String, dynamic>>[];
     final unit = (json['cellSize'] as num?)?.toDouble() ?? 64;
     if (!unit.isFinite || unit <= 0) return null;
     for (final layer in ['underlays', 'cages', 'lines', 'arrows', 'overlays']) {
       for (final raw in (json[layer] as List? ?? [])) {
         final item = (raw as Map).cast<String, dynamic>();
-        if (layer == 'cages' && !item.containsKey('cells'))
-          continue; // Text-only metadata.
+        if (layer == 'cages' &&
+            RegExp(
+              r'^foglight(?:\s*:|$)',
+              caseSensitive: false,
+            ).hasMatch('${item['value'] ?? ''}')) {
+          legacyFogMetadata.add(item);
+          continue;
+        }
+        if (layer == 'cages' &&
+            (!item.containsKey('cells') || (item['cells'] as List).isEmpty)) {
+          if (RegExp(
+            r'fog|trigger|foglight',
+            caseSensitive: false,
+          ).hasMatch('${item['value'] ?? item['text'] ?? ''}')) {
+            legacyFogMetadata.add(item);
+          }
+          continue; // Text-only compact metadata.
+        }
         final ref = {...item, 'layer': layer, 'unit': unit};
-        if (!_supportedRef(ref, size)) return null;
-        refs.add(ref);
+        refs.add({...ref, 'order': refs.length});
         if (layer == 'cages' && item['unique'] == true) {
           final cells = (item['cells'] as List)
               .map((cell) => _sclCell(cell, size))
@@ -160,7 +250,109 @@ class LibraryImport {
         }
       }
     }
-    if (!declaredStandard && (refs.isNotEmpty || rules.isNotEmpty)) return null;
+    final symbols = _sclSymbols(json, metadata, rules, size);
+    var symbolicSolution = _symbolSolution(metadata['solution'], symbols, size);
+    final fogData =
+        json['foglight'] ??
+        json['fogLights'] ??
+        json['fog'] ??
+        json['triggers'] ??
+        metadata['foglight'] ??
+        metadata['fogLights'] ??
+        metadata['fog'] ??
+        metadata['triggers'] ??
+        (legacyFogMetadata.isEmpty ? null : legacyFogMetadata) ??
+        (json['foglink'] != null || json['triggereffect'] != null
+            ? const <dynamic>[]
+            : null);
+    final playable = rawRegions.isEmpty
+        ? {for (var i = 0; i < size * size; i++) i}
+        : {
+            for (final (index, region) in symbolicRegions.indexed)
+              if (region != null) index,
+          };
+    if (!_validSymbolSolution(
+      symbolicSolution,
+      playable,
+      symbolicRegions,
+      size,
+      allowRowRepeats: allowsRowRepeats,
+      allowColumnRepeats: allowsColumnRepeats,
+      allowRegionRepeats: allowsRowRepeats || allowsColumnRepeats,
+    )) {
+      symbolicSolution = const [];
+    }
+    final fog = _readFog(
+      fogData,
+      size,
+      symbolicSolution,
+      playable,
+      givens: symbolicGivens,
+      foglink: json['foglink'],
+      triggerEffects: json['triggereffect'],
+    );
+    final supportReasons = <String>[
+      if (fogData != null && fog == null)
+        'This edition uses fog reveal rules that are not yet reproducible.',
+      if (refs.any((ref) => !_supportedRef(ref, size)))
+        'This edition contains clue geometry that cannot be rendered safely.',
+    ];
+    final deliberateBlanks = <int>{
+      if (RegExp(
+        r'\b(?:intentional|deliberate) (?:empty|blank)|one empty cell',
+        caseSensitive: false,
+      ).hasMatch(rules))
+        for (final (index, value) in symbolicSolution.indexed)
+          if (value == null) index,
+    };
+    final definition = LibraryPuzzleDefinition(
+      width: size,
+      height: size,
+      symbols: symbols,
+      playable: playable,
+      givens: symbolicGivens,
+      regions: symbolicRegions,
+      solution: symbolicSolution,
+      deliberateBlanks: deliberateBlanks,
+      initiallyVisible: fog?.$1,
+      fogTriggers: fog?.$2 ?? const [],
+      layers: refs,
+      presentation: {
+        ...?((metadata['settings'] as Map?)?.cast<String, dynamic>()),
+        ...?((json['settings'] as Map?)?.cast<String, dynamic>()),
+        'cellSize': json['cellSize'] ?? 64,
+      }.cast<String, dynamic>(),
+      allowRowRepeats: allowsRowRepeats,
+      allowColumnRepeats: allowsColumnRepeats,
+      allowRegionRepeats: allowsRowRepeats || allowsColumnRepeats,
+    );
+    final legacyCompatible =
+        symbols.indexed.every((pair) => pair.$2 == '${pair.$1 + 1}') &&
+        rawRegions.length == size &&
+        regions.every((region) => region >= 0) &&
+        !allowsRowRepeats &&
+        !allowsColumnRepeats &&
+        size <= 9 &&
+        fogData == null;
+    if (!legacyCompatible) {
+      final record = entry.withData({
+        'size': size,
+        'rules': entry.rules.isEmpty ? rules : entry.rules,
+        'ruleIds': {
+          ...entry.ruleIds,
+          ...matchLibraryRules(rules, entry.tags),
+        }.toList(),
+        'completeRules': supportReasons.isEmpty,
+      });
+      return LibraryDownload(
+        record,
+        definition: definition,
+        refs: refs,
+        manual: !declaredStandard,
+        finalCheck: symbolicSolution.length == size * size,
+        supportReasons: supportReasons,
+      );
+    }
     final knownRules = refs.isEmpty && _classicRules(rules, entry);
     return _build(
       entry,
@@ -172,6 +364,8 @@ class LibraryImport {
       knownRules: knownRules,
       solution: metadata['solution'],
       authorRules: rules,
+      definition: definition,
+      supportReasons: supportReasons,
     );
   }
 
@@ -311,6 +505,8 @@ class LibraryImport {
     required bool knownRules,
     Object? solution,
     String authorRules = '',
+    LibraryPuzzleDefinition? definition,
+    List<String> supportReasons = const [],
   }) {
     if (regions.any((region) => region < 0 || region >= size) ||
         List.generate(
@@ -362,12 +558,590 @@ class LibraryImport {
       refs: refs,
       manual: !knownRules && !hasSolution,
       finalCheck: !knownRules && hasSolution,
+      definition:
+          definition ?? LibraryPuzzleDefinition.fromBoard(board, layers: refs),
+      supportReasons: supportReasons,
     );
   }
 }
 
+Future<(List<Map<String, dynamic>>, List<Map<String, dynamic>>)> _cacheAssets(
+  List<Map<String, dynamic>> layers,
+  LibraryFetch fetch,
+) async {
+  final manifest = <Map<String, dynamic>>[];
+  final cache = <String, String>{};
+  Future<dynamic> visit(dynamic value, [String? key]) async {
+    if (value is List) return Future.wait(value.map((item) => visit(item)));
+    if (value is Map) {
+      final result = <String, dynamic>{};
+      for (final entry in value.entries) {
+        result['${entry.key}'] = await visit(entry.value, '${entry.key}');
+      }
+      return result;
+    }
+    if (value is! String ||
+        !const {
+          'image',
+          'imageUrl',
+          'src',
+          'url',
+          'backgroundImage',
+        }.contains(key)) {
+      return value;
+    }
+    final uri = Uri.tryParse(value);
+    if (uri == null || uri.scheme != 'https' || uri.userInfo.isNotEmpty) {
+      return value;
+    }
+    if (!const {
+      'logic-masters.de',
+      'www.logic-masters.de',
+      'sudokupad.app',
+      'www.sudokupad.app',
+      'images.ctc-puzzles.com',
+    }.contains(uri.host)) {
+      throw const FormatException('Puzzle artwork uses an untrusted host.');
+    }
+    if (cache[value] case final installed?) return 'asset:$installed';
+    final response = requireLibraryResponse(await fetch(uri));
+    if (response.bytes.isEmpty) {
+      throw const FormatException('Puzzle artwork is empty.');
+    }
+    final encoded = base64Encode(response.bytes);
+    final fingerprint = librarySha256(encoded);
+    cache[value] = fingerprint;
+    manifest.add({
+      'id': fingerprint,
+      'source': value,
+      'fingerprint': fingerprint,
+      'mime': response.headers['content-type'] ?? 'application/octet-stream',
+      'data': encoded,
+    });
+    return 'asset:$fingerprint';
+  }
+
+  final installed = <Map<String, dynamic>>[];
+  for (final layer in layers) {
+    installed.add((await visit(layer) as Map).cast<String, dynamic>());
+  }
+  return (installed, manifest);
+}
+
+LibraryPuzzleDefinition _definitionWithAssets(
+  LibraryPuzzleDefinition source,
+  List<Map<String, dynamic>> layers,
+  List<Map<String, dynamic>> assets,
+) => LibraryPuzzleDefinition(
+  version: source.version,
+  width: source.width,
+  height: source.height,
+  symbols: source.symbols,
+  playable: source.playable,
+  givens: source.givens,
+  regions: source.regions,
+  solution: source.solution,
+  deliberateBlanks: source.deliberateBlanks,
+  initiallyVisible: source.initiallyVisible,
+  fogTriggers: source.fogTriggers,
+  layers: layers,
+  presentation: source.presentation,
+  assets: assets,
+  allowRowRepeats: source.allowRowRepeats,
+  allowColumnRepeats: source.allowColumnRepeats,
+  allowRegionRepeats: source.allowRegionRepeats,
+);
+
+class LibraryResolution {
+  const LibraryResolution(
+    this.original,
+    this.resolved,
+    this.payload,
+    this.redirects,
+  );
+  final Uri original;
+  final Uri resolved;
+  final String payload;
+  final int redirects;
+}
+
+bool _looksLikeHtml(String value) => RegExp(
+  r'^\s*(?:<!doctype\s+html|<html|<head|<body)\b',
+  caseSensitive: false,
+).hasMatch(value);
+
+bool _aliasUri(Uri uri) =>
+    uri.host == 'tinyurl.com' || uri.host == 'www.tinyurl.com';
+
+bool _safeShareUri(Uri uri) {
+  if (uri.scheme != 'https' ||
+      uri.userInfo.isNotEmpty ||
+      uri.hasPort ||
+      uri.fragment.isNotEmpty) {
+    return false;
+  }
+  return switch (uri.host) {
+    'tinyurl.com' ||
+    'www.tinyurl.com' ||
+    'sudokupad.app' ||
+    'www.sudokupad.app' ||
+    'app.crackingthecryptic.com' ||
+    'app.crackingthecryptic.tv' ||
+    'sudokupad.svencodes.com' ||
+    'f-puzzles.com' ||
+    'www.f-puzzles.com' => true,
+    _ => false,
+  };
+}
+
+String? _rawQueryValue(Uri uri, String name) {
+  for (final field in uri.query.split('&')) {
+    final split = field.indexOf('=');
+    final key = split < 0 ? field : field.substring(0, split);
+    if (Uri.decodeQueryComponent(key) != name) continue;
+    final raw = split < 0 ? '' : field.substring(split + 1);
+    // decodeComponent intentionally preserves literal '+'.
+    return Uri.decodeComponent(raw);
+  }
+  return null;
+}
+
+String? _inlinePayload(Uri uri) {
+  String? value;
+  if (uri.host.endsWith('f-puzzles.com')) {
+    value = _rawQueryValue(uri, 'load');
+    if (value != null && value.isNotEmpty) return 'fpuz$value';
+  }
+  value = _rawQueryValue(uri, 'puzzleid');
+  if (value != null && value.isNotEmpty && _payloadPrefix.hasMatch(value)) {
+    return value;
+  }
+  final segments = uri.pathSegments;
+  final start =
+      uri.host == 'sudokupad.svencodes.com' && segments.firstOrNull == 'puzzle'
+      ? 1
+      : (segments.firstOrNull == 'sudoku' ? 1 : 0);
+  if (segments.length > start) {
+    final value = segments.sublist(start).join('/');
+    if (_payloadPrefix.hasMatch(value)) return value;
+  }
+  return null;
+}
+
+final _payloadPrefix = RegExp(r'^(?:scl|ctc|fpuz|fpuzzles|classic|scf|pack)');
+
+Map<String, dynamic> _provenance(LibraryResolution resolution) => {
+  'originalUrl': resolution.original.toString(),
+  'resolvedUrl': resolution.resolved.toString(),
+  'sourcePayload': resolution.payload,
+  'fingerprint': librarySha256(resolution.payload),
+  'format':
+      _payloadPrefix.firstMatch(resolution.payload)?.group(0) ?? 'sudokupad',
+  'resolverVersion': LibraryImport.resolverVersion,
+  'redirects': resolution.redirects,
+  'identity': 'author-source',
+};
+
+bool _validPuzzlePayload(LibraryEntry entry, String encoded) {
+  if (LibraryImport.decode(entry, encoded) != null)
+    return _matchesEmbeddedTitle(entry, encoded);
+  try {
+    final prefix = _payloadPrefix.firstMatch(encoded);
+    final format = prefix?.group(0);
+    if (format == 'scf' || format == 'pack')
+      return encoded.length > prefix!.end;
+    final body = prefix == null ? encoded : encoded.substring(prefix.end);
+    final object = _decodeJson(body.startsWith('{') ? body : _decompress(body));
+    final cells = object['cells'] ?? object['grid'];
+    return cells is List &&
+        cells.isNotEmpty &&
+        cells.length <= 25 &&
+        _matchesEmbeddedTitle(entry, encoded);
+  } on Object {
+    return false;
+  }
+}
+
+bool _matchesEmbeddedTitle(LibraryEntry entry, String encoded) {
+  try {
+    final prefix = _payloadPrefix.firstMatch(encoded);
+    if (prefix?.group(0) == 'classic') return true;
+    final body = prefix == null ? encoded : encoded.substring(prefix.end);
+    final object = _decodeJson(body.startsWith('{') ? body : _decompress(body));
+    final metadata = object['metadata'];
+    final title = metadata is Map
+        ? metadata['title']?.toString()
+        : object['title']?.toString();
+    if (title == null || title.trim().isEmpty || entry.title.trim().isEmpty) {
+      return true;
+    }
+    String normalize(String value) => value
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    final expected = normalize(entry.title);
+    final actual = normalize(title);
+    return expected == actual ||
+        (expected.length >= 8 &&
+            (expected.contains(actual) || actual.contains(expected)));
+  } on FormatException {
+    return false;
+  }
+}
+
+List<String>? _lookupKey(Uri uri) {
+  if (uri.host.endsWith('f-puzzles.com')) {
+    return null;
+  }
+  final puzzleId = uri.queryParameters['puzzleid'];
+  if (puzzleId != null && RegExp(r'^[\w-]+(?:/[\w-]+)*$').hasMatch(puzzleId)) {
+    return puzzleId.split('/');
+  }
+  var segments = uri.pathSegments;
+  if (segments.firstOrNull == 'sudoku') segments = segments.sublist(1);
+  if (uri.host == 'sudokupad.svencodes.com' &&
+      segments.firstOrNull == 'puzzle') {
+    segments = segments.sublist(1);
+  } else if ((uri.host == 'sudokupad.app' || uri.host == 'www.sudokupad.app') &&
+      segments.firstOrNull == 'puzzle') {
+    return null; // This route is a player shell, not the primary API slug.
+  }
+  if (segments.isEmpty ||
+      segments.any((part) => !RegExp(r'^[\w-]+$').hasMatch(part))) {
+    return null;
+  }
+  return segments;
+}
+
 bool _sameList(List<int> a, List<int> b) =>
     a.length == b.length && a.indexed.every((pair) => b[pair.$1] == pair.$2);
+
+List<String> _sclSymbols(
+  Map<String, dynamic> json,
+  Map<String, dynamic> metadata,
+  String rules,
+  int size,
+) {
+  final raw = json['symbols'] ?? metadata['symbols'] ?? metadata['digits'];
+  if (raw is List) {
+    final result = raw.map((value) => '$value').toList();
+    if (result.length == size && result.toSet().length == size) return result;
+  }
+  if (raw is String) {
+    final separated = raw
+        .split(RegExp(r'\s*[,;|]\s*|\s+'))
+        .where((value) => value.isNotEmpty)
+        .toList();
+    if (separated.length == size && separated.toSet().length == size) {
+      return separated;
+    }
+    final characters = raw.runes.map(String.fromCharCode).toList();
+    if (characters.length == size && characters.toSet().length == size) {
+      return characters;
+    }
+  }
+  final set = RegExp(r'\{([^}]+)\}').firstMatch(rules)?.group(1);
+  if (set != null) {
+    final values = set
+        .replaceAll('−', '-')
+        .split(RegExp(r'\s*,\s*'))
+        .where((value) => value.isNotEmpty)
+        .toList();
+    if (values.length == size && values.toSet().length == values.length) {
+      return values;
+    }
+  }
+  final range = RegExp(
+    r'(-?\d+)\s*(?:-|through|to|bis|–|—)\s*(-?\d+)',
+    caseSensitive: false,
+  ).firstMatch(rules.replaceAll('−', '-'));
+  if (range != null) {
+    final start = int.parse(range.group(1)!);
+    final end = int.parse(range.group(2)!);
+    if ((end - start).abs() + 1 <= size) {
+      return [
+        for (
+          var value = start;
+          start <= end ? value <= end : value >= end;
+          value += start <= end ? 1 : -1
+        )
+          '$value',
+      ];
+    }
+  }
+  return [for (var value = 1; value <= size; value++) '$value'];
+}
+
+List<String?> _symbolSolution(Object? raw, List<String> symbols, int size) {
+  final count = size * size;
+  List<Object?> values;
+  if (raw is List) {
+    values = raw
+        .expand<Object?>((value) => value is List ? value : [value])
+        .toList();
+  } else if (raw is String) {
+    final separated = raw
+        .trim()
+        .split(RegExp(r'\s*[,;|]\s*|\s+'))
+        .where((value) => value.isNotEmpty)
+        .toList();
+    values = separated.length == count
+        ? separated
+        : (symbols.every((symbol) => symbol.length == 1) && raw.length == count
+              ? raw.split('')
+              : const []);
+  } else {
+    values = const [];
+  }
+  if (values.length != count) return const [];
+  final result = <String?>[
+    for (final value in values)
+      if (value == null || value == '' || value == '.') null else '$value',
+  ];
+  if (result.any((value) => value != null && !symbols.contains(value))) {
+    return const [];
+  }
+  return result;
+}
+
+bool _validSymbolSolution(
+  List<String?> solution,
+  Set<int> playable,
+  List<int?> regions,
+  int size, {
+  required bool allowRowRepeats,
+  required bool allowColumnRepeats,
+  required bool allowRegionRepeats,
+}) {
+  if (solution.length != size * size) return solution.isEmpty;
+  bool unique(Iterable<int> cells, bool repeats) {
+    if (repeats) return true;
+    final values = [
+      for (final cell in cells)
+        if (playable.contains(cell) && solution[cell] != null) solution[cell],
+    ];
+    return values.toSet().length == values.length;
+  }
+
+  for (var row = 0; row < size; row++) {
+    if (!unique([
+      for (var col = 0; col < size; col++) row * size + col,
+    ], allowRowRepeats)) {
+      return false;
+    }
+  }
+  for (var col = 0; col < size; col++) {
+    if (!unique([
+      for (var row = 0; row < size; row++) row * size + col,
+    ], allowColumnRepeats)) {
+      return false;
+    }
+  }
+  for (final region in regions.whereType<int>().toSet()) {
+    if (!unique(
+      playable.where((cell) => regions[cell] == region),
+      allowRegionRepeats,
+    )) {
+      return false;
+    }
+  }
+  return true;
+}
+
+(Set<int>, List<LibraryFogTrigger>)? _readFog(
+  Object? raw,
+  int size,
+  List<String?> solution,
+  Set<int> playable, {
+  required List<String?> givens,
+  Object? foglink,
+  Object? triggerEffects,
+}) {
+  if (raw == null) return null;
+  int? cell(Object? value) {
+    if (value is int && value >= 0 && value < size * size) return value;
+    if (value is List && value.length == 2) {
+      try {
+        return _sclCell(value, size);
+      } on FormatException {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  Set<int>? cells(Object? value) {
+    if (value is! List) return null;
+    final result = value.map(cell).toList();
+    return result.any((item) => item == null) ? null : result.nonNulls.toSet();
+  }
+
+  Set<int>? expression(Object? value) {
+    if (value is List) return cells(value);
+    if (value is! String) return null;
+    final result = <int>{};
+    for (final part in value.split(RegExp(r'\s*[,;]\s*'))) {
+      final match = RegExp(
+        r'^r(\d+)c(\d+)(?:\s*-\s*r(\d+)c(\d+))?$',
+        caseSensitive: false,
+      ).firstMatch(part.trim());
+      if (match == null) return null;
+      final r1 = int.parse(match.group(1)!) - 1;
+      final c1 = int.parse(match.group(2)!) - 1;
+      final r2 = int.parse(match.group(3) ?? match.group(1)!) - 1;
+      final c2 = int.parse(match.group(4) ?? match.group(2)!) - 1;
+      for (var row = math.min(r1, r2); row <= math.max(r1, r2); row++) {
+        for (var col = math.min(c1, c2); col <= math.max(c1, c2); col++) {
+          if (row < 0 || row >= size || col < 0 || col >= size) return null;
+          result.add(row * size + col);
+        }
+      }
+    }
+    return result;
+  }
+
+  Set<int>? initial;
+  List<dynamic>? normalizedLinks;
+
+  if (raw is Map) {
+    final map = raw.cast<String, dynamic>();
+    final visible = cells(
+      map['initiallyVisible'] ?? map['visible'] ?? map['start'],
+    );
+    final rawTriggers = map['triggers'];
+    if (visible == null || rawTriggers is! List) return null;
+    final triggers = <LibraryFogTrigger>[];
+    for (final item in rawTriggers) {
+      if (item is! Map) return null;
+      final trigger = item.cast<String, dynamic>();
+      final reveal = cells(trigger['reveals'] ?? trigger['cells']);
+      if (reveal == null) return null;
+      final requires = <int, String>{};
+      final condition = trigger['requires'];
+      if (condition is Map) {
+        for (final entry in condition.entries) {
+          final index = int.tryParse('${entry.key}');
+          if (index == null || index < 0 || index >= size * size) return null;
+          requires[index] = '${entry.value}';
+        }
+      } else {
+        final index = cell(trigger['cell'] ?? condition);
+        final value =
+            trigger['value'] ??
+            (index != null && index < solution.length ? solution[index] : null);
+        if (index == null || value == null) return null;
+        requires[index] = '$value';
+      }
+      triggers.add(
+        LibraryFogTrigger(
+          requires: requires,
+          reveals: reveal,
+          requiresLit: trigger['requiresLit'] == true,
+          reversible: trigger['reversible'] as bool? ?? true,
+        ),
+      );
+    }
+    return (visible, triggers);
+  } else if (raw is List) {
+    // Direct SudokuPad foglight arrays are the authored initial lit cells.
+    if (raw.every((item) => item is List && item.length == 2)) {
+      initial = cells(raw);
+    } else {
+      // Legacy compact metadata uses cages labelled FOGLIGHT or
+      // `FOGLIGHT: r1c1-r2c2`; combine the label and cage geometry.
+      initial = <int>{};
+      for (final item in raw) {
+        if (item is! Map) return null;
+        final cage = item.cast<String, dynamic>();
+        final label = '${cage['value'] ?? ''}';
+        final suffix = RegExp(
+          r'^foglight\s*:\s*(.+)$',
+          caseSensitive: false,
+        ).firstMatch(label);
+        final fromLabel = suffix == null
+            ? const <int>{}
+            : expression(suffix.group(1));
+        final fromCage = cells(cage['cells'] ?? const <dynamic>[]);
+        if (fromLabel == null || fromCage == null) return null;
+        initial.addAll(fromLabel);
+        initial.addAll(fromCage);
+      }
+    }
+  } else {
+    return null;
+  }
+
+  if (initial == null) return null;
+  if (foglink is List) {
+    normalizedLinks = foglink;
+  } else if (triggerEffects is List) {
+    normalizedLinks = <dynamic>[];
+    for (final rawEffect in triggerEffects) {
+      if (rawEffect is! Map) return null;
+      final effect = rawEffect.cast<String, dynamic>();
+      final trigger = effect['trigger'];
+      final outcome = effect['effect'];
+      if (trigger is! Map || outcome is! Map) return null;
+      if (outcome['type'] != 'foglight' ||
+          (trigger['type'] != null && trigger['type'] != 'cellvalue')) {
+        return null; // Dynamic/non-fog effects remain pending support.
+      }
+      normalizedLinks.add([trigger['cell'], outcome['cells']]);
+    }
+  }
+
+  final triggers = <LibraryFogTrigger>[];
+  if (normalizedLinks != null) {
+    for (final link in normalizedLinks) {
+      if (link is! List || link.length != 2) return null;
+      final requiredCells = expression(link[0]);
+      final revealedCells = expression(link[1]);
+      if (requiredCells == null || revealedCells == null) return null;
+      final requires = <int, String>{};
+      for (final index in requiredCells) {
+        if (index >= solution.length || solution[index] == null) return null;
+        requires[index] = solution[index]!;
+      }
+      triggers.add(
+        LibraryFogTrigger(requires: requires, reveals: revealedCells),
+      );
+    }
+  } else {
+    // Standard SudokuPad fog: a correct placed value lights its clipped 3×3
+    // neighborhood. Initial givens are lit as single cells (deep fog rule).
+    initial.addAll([
+      for (final (index, given) in givens.indexed)
+        if (given != null && playable.contains(index)) index,
+    ]);
+    if (solution.length != size * size) return null;
+    for (final index in playable) {
+      final answer = solution[index];
+      if (answer == null) continue;
+      final row = index ~/ size;
+      final col = index % size;
+      triggers.add(
+        LibraryFogTrigger(
+          requires: {index: answer},
+          reveals: {
+            for (
+              var r = math.max(0, row - 1);
+              r <= math.min(size - 1, row + 1);
+              r++
+            )
+              for (
+                var c = math.max(0, col - 1);
+                c <= math.min(size - 1, col + 1);
+                c++
+              )
+                if (playable.contains(r * size + c)) r * size + c,
+          },
+        ),
+      );
+    }
+  }
+  return (initial, triggers);
+}
 
 bool _classicRules(String rules, LibraryEntry entry) {
   if (entry.ruleIds.isNotEmpty ||
@@ -422,64 +1196,37 @@ List<int> _boxRegions(int size) {
 }
 
 bool _supportedRef(Map<String, dynamic> item, int size) {
-  bool point(dynamic p) =>
+  bool point(dynamic p, {bool exterior = false}) =>
       p is List &&
       p.length == 2 &&
-      p.every((v) => v is num && v.isFinite && v >= 0 && v <= size);
-  final basics = {
-    'layer',
-    'unit',
-    'color',
-    'borderColor',
-    'backgroundColor',
-    'rounded',
-    'thickness',
-    'stroke',
-    'stroke-width',
-    'stroke-linejoin',
-    'stroke-linecap',
-    'stroke-dasharray',
-    'fontSize',
-    'textColor',
-    'text',
-    'angle',
-    'fill',
-    'class',
-  };
+      p.every(
+        (v) =>
+            v is num &&
+            v.isFinite &&
+            v >= (exterior ? -2 : 0) &&
+            v <= size + (exterior ? 2 : 0),
+      );
+  bool finite(String key) =>
+      item[key] == null || (item[key] is num && (item[key] as num).isFinite);
   switch (item['layer']) {
     case 'underlays':
     case 'overlays':
-      return item.keys.every(
-            {...basics, 'center', 'width', 'height'}.contains,
-          ) &&
-          point(item['center']) &&
-          ['width', 'height'].every(
-            (key) =>
-                item[key] == null ||
-                (item[key] is num && (item[key] as num).toDouble().isFinite),
-          );
+      return point(item['center'], exterior: true) &&
+          finite('width') &&
+          finite('height') &&
+          finite('angle');
     case 'cages':
-      return item.keys.every(
-            {
-              ...basics,
-              'value',
-              'cells',
-              'unique',
-              'hidden',
-              'outline',
-              'label',
-            }.contains,
-          ) &&
-          item['cells'] is List &&
+      return item['cells'] is List &&
           (item['cells'] as List).isNotEmpty &&
           (item['cells'] as List).every(point);
     case 'lines':
     case 'arrows':
       final points = item['wayPoints'];
-      return item.keys.every({...basics, 'wayPoints', 'headLength'}.contains) &&
-          points is List &&
+      return points is List &&
           points.length >= 2 &&
-          points.every(point);
+          points.every((value) => point(value, exterior: true)) &&
+          finite('thickness') &&
+          finite('headLength');
     default:
       return false;
   }

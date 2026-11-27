@@ -1,7 +1,9 @@
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/semantics.dart' show CustomSemanticsAction;
 
 import 'hum.dart';
 
@@ -65,6 +67,7 @@ class SudokuBoardView extends StatefulWidget {
     this.selected,
     this.highlightRegion,
     this.sliding = false,
+    this.renderGiven,
     this.onDrop,
     this.onDigit,
     this.onErase,
@@ -83,6 +86,7 @@ class SudokuBoardView extends StatefulWidget {
   final int? selected;
   final int? highlightRegion;
   final bool sliding;
+  final Widget Function(int index, String digit, TextStyle style)? renderGiven;
   final ValueChanged<int> onCell;
   final void Function(int index, BoardDrag data)? onDrop;
   final void Function(int index, int digit)? onDigit;
@@ -95,10 +99,82 @@ class SudokuBoardView extends StatefulWidget {
 class _SudokuBoardViewState extends State<SudokuBoardView> {
   final _focus = FocusNode(debugLabel: 'Sudoku board');
   int _cursor = 0;
+  final _pointers = <int>{};
+  bool _multitouch = false;
+  int? _moving;
+  int? _track;
+  Offset _origin = Offset.zero;
+  double _travel = 0;
+  double? _boardWidth;
+
+  Map<int, (String, Offset)> _tracks(int index) {
+    final n = widget.size;
+    if (!widget.sliding ||
+        widget.cells[index] == 0 ||
+        widget.fixed.contains(index) ||
+        widget.anchors.contains(index))
+      return {};
+    return {
+      if (index >= n && widget.cells[index - n] == 0)
+        index - n: ('up', const Offset(0, -1)),
+      if (index + n < n * n && widget.cells[index + n] == 0)
+        index + n: ('down', const Offset(0, 1)),
+      if (index % n > 0 && widget.cells[index - 1] == 0)
+        index - 1: ('left', const Offset(-1, 0)),
+      if (index % n < n - 1 && widget.cells[index + 1] == 0)
+        index + 1: ('right', const Offset(1, 0)),
+    };
+  }
+
+  void _resetSlide() {
+    _moving = _track = null;
+    _travel = 0;
+  }
+
+  void _updateSlide(Offset position, double extent) {
+    final from = _moving;
+    if (from == null || _pointers.length != 1) return;
+    final delta = position - _origin;
+    final tracks = _tracks(from);
+    if (_track == null) {
+      final ax = delta.dx.abs();
+      final ay = delta.dy.abs();
+      if (math.max(ax, ay) < 8 || (ax - ay).abs() < math.max(ax, ay) * .25)
+        return;
+      final direction = ax > ay
+          ? Offset(delta.dx.sign, 0)
+          : Offset(0, delta.dy.sign);
+      _track = tracks.entries
+          .where((e) => e.value.$2 == direction)
+          .firstOrNull
+          ?.key;
+    }
+    final direction = tracks[_track]?.$2;
+    if (direction == null) return;
+    setState(
+      () => _travel = (delta.dx * direction.dx + delta.dy * direction.dy).clamp(
+        0.0,
+        extent,
+      ),
+    );
+  }
+
+  void _finishSlide(double extent) {
+    final from = _moving;
+    final to = _track;
+    final commit =
+        from != null &&
+        to != null &&
+        _travel > extent / 2 &&
+        _tracks(from).containsKey(to);
+    setState(_resetSlide);
+    if (commit) widget.onDrop?.call(to, BoardDrag.slide(from));
+  }
 
   @override
   void didUpdateWidget(covariant SudokuBoardView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.size != widget.size || !widget.sliding) _resetSlide();
     if (oldWidget.size != widget.size) _cursor = 0;
     if (widget.selected != oldWidget.selected && widget.selected != null) {
       _cursor = widget.selected!;
@@ -127,6 +203,9 @@ class _SudokuBoardViewState extends State<SudokuBoardView> {
       _ => null,
     };
     if (next != null) {
+      if (_cursor == widget.selected && _tracks(_cursor).containsKey(next)) {
+        widget.onDrop?.call(next.toInt(), BoardDrag.slide(_cursor));
+      }
       setState(() => _cursor = next.toInt());
       return KeyEventResult.handled;
     }
@@ -154,6 +233,9 @@ class _SudokuBoardViewState extends State<SudokuBoardView> {
   Widget build(BuildContext context) {
     final size = widget.size;
     final visible = widget.visible;
+    final fogColor = Theme.of(context).brightness == Brightness.dark
+        ? const Color(0xff4d4d4d)
+        : const Color(0xffafafaf);
     final marks = widget.marks
         .where((mark) => visible == null || mark.cells.every(visible.contains))
         .toList();
@@ -169,75 +251,158 @@ class _SudokuBoardViewState extends State<SudokuBoardView> {
           child: LayoutBuilder(
             builder: (context, constraints) {
               final step = constraints.maxWidth / size;
-              return Stack(
-                fit: StackFit.expand,
-                children: [
-                  CustomPaint(
-                    painter: _BoardGround(
-                      size: size,
-                      regions: widget.regions,
-                      visible: visible,
-                      highlight: widget.highlightRegion,
-                      selected: widget.selected,
-                      conflicts: widget.conflicts,
-                      marks: const [],
+              if (_boardWidth != constraints.maxWidth) _resetSlide();
+              _boardWidth = constraints.maxWidth;
+              final active = _moving ?? widget.selected;
+              final tracks = active == null
+                  ? <int, (String, Offset)>{}
+                  : _tracks(active);
+              final direction = tracks[_track]?.$2 ?? Offset.zero;
+              return Listener(
+                onPointerDown: (e) {
+                  if (_pointers.isEmpty) _multitouch = false;
+                  _pointers.add(e.pointer);
+                  if (_pointers.length > 1) _multitouch = true;
+                  if (_pointers.length > 1 && _moving != null)
+                    setState(_resetSlide);
+                },
+                onPointerUp: (e) => _pointers.remove(e.pointer),
+                onPointerCancel: (e) {
+                  _pointers.remove(e.pointer);
+                  if (_moving != null) setState(_resetSlide);
+                },
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    CustomPaint(
+                      painter: _BoardGround(
+                        fogColor: fogColor,
+                        size: size,
+                        regions: widget.regions,
+                        visible: visible,
+                        highlight: widget.highlightRegion,
+                        selected: widget.selected,
+                        conflicts: widget.conflicts,
+                        marks: const [],
+                      ),
                     ),
-                  ),
-                  CustomPaint(
-                    painter: _BoardGrid(size: size, regions: widget.regions),
-                  ),
-                  if (widget.clueArtwork != null)
-                    IgnorePointer(child: widget.clueArtwork),
-                  CustomPaint(
-                    painter: _BoardGround(
-                      size: size,
-                      regions: widget.regions,
-                      visible: visible,
-                      highlight: null,
-                      selected: null,
-                      conflicts: const {},
-                      marks: marks,
-                      drawGround: false,
+                    CustomPaint(
+                      painter: _BoardGrid(size: size, regions: widget.regions),
                     ),
-                  ),
-                  Column(
-                    children: List.generate(
-                      size,
-                      (row) => Expanded(
-                        child: Row(
-                          children: List.generate(
+                    if (widget.clueArtwork != null)
+                      IgnorePointer(child: widget.clueArtwork),
+                    CustomPaint(
+                      painter: _BoardGround(
+                        fogColor: fogColor,
+                        size: size,
+                        regions: widget.regions,
+                        visible: visible,
+                        highlight: null,
+                        selected: null,
+                        conflicts: const {},
+                        marks: marks,
+                        drawGround: false,
+                      ),
+                    ),
+                    if (visible != null && visible.length < size * size)
+                      IgnorePointer(
+                        child: CustomPaint(
+                          painter: _FogLineEdges(
                             size,
-                            (column) => Expanded(
-                              child: _cell(
-                                context,
-                                row * size + column,
-                                step,
-                                marks,
+                            visible,
+                            widget.marks,
+                            fogColor,
+                          ),
+                        ),
+                      ),
+                    Column(
+                      children: List.generate(
+                        size,
+                        (row) => Expanded(
+                          child: Row(
+                            children: List.generate(
+                              size,
+                              (column) => Expanded(
+                                child: _cell(
+                                  context,
+                                  row * size + column,
+                                  step,
+                                  marks,
+                                ),
                               ),
                             ),
                           ),
                         ),
                       ),
                     ),
-                  ),
-                  IgnorePointer(
-                    child: CustomPaint(
-                      painter: _BoardGrid(
-                        size: size,
-                        regions: widget.regions,
-                        cursor: _focus.hasFocus ? _cursor : null,
-                        selected: widget.selected,
-                        drawGrid: false,
+                    IgnorePointer(
+                      child: CustomPaint(
+                        painter: _BoardGrid(
+                          size: size,
+                          regions: widget.regions,
+                          cursor: _focus.hasFocus ? _cursor : null,
+                          selected: widget.selected,
+                          drawGrid: false,
+                        ),
                       ),
                     ),
-                  ),
-                ],
+                    if (active != null)
+                      for (final track in tracks.values)
+                        Positioned(
+                          left:
+                              (active % size + .5 + track.$2.dx * .55) * step -
+                              step * .15,
+                          top:
+                              (active ~/ size + .5 + track.$2.dy * .55) * step -
+                              step * .15,
+                          child: IgnorePointer(
+                            child: Icon(
+                              switch (track.$1) {
+                                'up' => Icons.arrow_upward,
+                                'down' => Icons.arrow_downward,
+                                'left' => Icons.arrow_back,
+                                _ => Icons.arrow_forward,
+                              },
+                              size: step * .30,
+                              color: Hum.focus,
+                            ),
+                          ),
+                        ),
+                    if (_moving case final int index when _travel > 0)
+                      Positioned(
+                        left: index % size * step + direction.dx * _travel,
+                        top: index ~/ size * step + direction.dy * _travel,
+                        width: step,
+                        height: step,
+                        child: IgnorePointer(
+                          child: ExcludeSemantics(
+                            child: BoardDigitFace(
+                              value: widget.cells[index],
+                              selected: true,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
               );
             },
           ),
         ),
       ),
     );
+  }
+
+  Widget _digitText(
+    String value, {
+    required TextStyle style,
+    required int index,
+    required bool given,
+  }) {
+    final render = widget.renderGiven;
+    return given && render != null
+        ? render(index, value, style)
+        : Text(value, style: style);
   }
 
   Widget _cell(
@@ -269,6 +434,7 @@ class _SudokuBoardViewState extends State<SudokuBoardView> {
       widget.onCell(index);
     }
 
+    final tracks = _tracks(index);
     Widget cell = DragTarget<BoardDrag>(
       onWillAcceptWithDetails: (details) => !hidden && widget.onDrop != null,
       onAcceptWithDetails: (details) =>
@@ -282,16 +448,20 @@ class _SudokuBoardViewState extends State<SudokuBoardView> {
           children: [
             if (candidates.isNotEmpty) const ColoredBox(color: Hum.cyan),
             Center(
-              child: hidden
-                  ? Icon(Icons.blur_on, size: extent * .32, color: Hum.cyan)
+              child: _moving == index && _travel > 0
+                  ? const SizedBox.shrink()
+                  : hidden
+                  ? const SizedBox.shrink()
                   : value > 0
                   ? SizedBox(
                       width: extent * .72,
                       height: extent * .75,
                       child: FittedBox(
                         fit: BoxFit.scaleDown,
-                        child: Text(
+                        child: _digitText(
                           '$value',
+                          index: index,
+                          given: fixed,
                           style: TextStyle(
                             fontFamily: Hum.digitFont,
                             fontSize: extent * .53,
@@ -340,11 +510,22 @@ class _SudokuBoardViewState extends State<SudokuBoardView> {
         ),
       ),
     );
-    if (widget.sliding && value > 0 && !fixed && !anchored) {
-      cell = Draggable<BoardDrag>(
-        data: BoardDrag.slide(index),
-        maxSimultaneousDrags: 1,
-        feedback: BoardDigitFace(value: value, selected: true),
+    if (tracks.isNotEmpty) {
+      cell = GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        excludeFromSemantics: true,
+        onPanDown: (e) => _origin = e.globalPosition,
+        onPanStart: (e) {
+          if (!_multitouch && _pointers.length == 1) {
+            setState(() => _moving = index);
+            _updateSlide(e.globalPosition, extent);
+          }
+        },
+        onPanUpdate: (e) => _updateSlide(e.globalPosition, extent),
+        onPanEnd: (_) => _finishSlide(extent),
+        onPanCancel: () {
+          if (_moving != null) setState(_resetSlide);
+        },
         child: cell,
       );
     }
@@ -353,6 +534,14 @@ class _SudokuBoardViewState extends State<SudokuBoardView> {
       label: label,
       selected: widget.selected == index,
       button: true,
+      customSemanticsActions: {
+        for (final entry in tracks.entries)
+          CustomSemanticsAction(
+            label:
+                'Slide ${entry.value.$1} into row ${entry.key ~/ widget.size + 1}, column ${entry.key % widget.size + 1}',
+          ): () =>
+              widget.onDrop?.call(entry.key, BoardDrag.slide(index)),
+      },
       onTap: select,
       child: ExcludeSemantics(child: cell),
     );
@@ -440,6 +629,7 @@ class _BoardGround extends CustomPainter {
     required this.conflicts,
     required this.marks,
     this.drawGround = true,
+    required this.fogColor,
   });
 
   final int size;
@@ -450,6 +640,7 @@ class _BoardGround extends CustomPainter {
   final Set<int> conflicts;
   final List<BoardMark> marks;
   final bool drawGround;
+  final Color fogColor;
 
   @override
   void paint(Canvas canvas, Size bounds) {
@@ -460,7 +651,7 @@ class _BoardGround extends CustomPainter {
     for (var index = 0; drawGround && index < size * size; index++) {
       final hidden = visible != null && !visible!.contains(index);
       paint.color = hidden
-          ? Hum.fog
+          ? fogColor
           : conflicts.contains(index)
           ? Hum.coral
           : index == selected
@@ -608,6 +799,104 @@ class _BoardGround extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _BoardGround oldDelegate) => true;
+}
+
+/// Carries only the incoming tangent into the feather at an earned light edge.
+class _FogLineEdges extends CustomPainter {
+  const _FogLineEdges(this.size, this.visible, this.marks, this.fog);
+  final int size;
+  final Set<int> visible;
+  final List<BoardMark> marks;
+  final Color fog;
+
+  @override
+  void paint(Canvas canvas, Size bounds) {
+    final step = bounds.width / size;
+    Offset center(int index) =>
+        Offset((index % size + .5) * step, (index ~/ size + .5) * step);
+    final lines = Paint()
+      ..strokeWidth = step * .13
+      ..strokeCap = StrokeCap.butt;
+    for (final cell in visible) {
+      final origin = center(cell);
+      final neighbors = {
+        if (cell % size > 0) cell - 1: const Offset(-1, 0),
+        if (cell % size < size - 1) cell + 1: const Offset(1, 0),
+        if (cell >= size) cell - size: const Offset(0, -1),
+        if (cell < size * (size - 1)) cell + size: const Offset(0, 1),
+      };
+      for (final edge in neighbors.entries.where(
+        (e) => !visible.contains(e.key),
+      )) {
+        final dir = edge.value;
+        final start = origin + dir * (step * .50);
+        final end = start + dir * (step * .20);
+        final band = Rect.fromCenter(
+          center: (start + end) / 2,
+          width: dir.dx == 0 ? step : step * .20,
+          height: dir.dy == 0 ? step : step * .20,
+        );
+        canvas.drawRect(
+          band,
+          Paint()
+            ..shader = ui.Gradient.linear(start, end, [
+              Color.lerp(fog, Hum.board, .35)!,
+              fog,
+            ]),
+        );
+      }
+    }
+    for (final mark in marks) {
+      if (mark.cells.every(visible.contains)) continue;
+      final color = switch (mark.kind) {
+        'renban' => Hum.coral,
+        'germanWhispers' => Hum.pearEdge,
+        'regionSum' || 'regionSumLines' => Hum.focus,
+        'thermometer' || 'palindrome' => Hum.grid,
+        'arrow' || 'arrows' || 'diagonal' => Hum.focus,
+        _ => null,
+      };
+      if (color == null) continue;
+      for (var i = 1; i < mark.cells.length; i++) {
+        final a = mark.cells[i - 1], b = mark.cells[i];
+        if (!visible.contains(a) && !visible.contains(b)) continue;
+        if (visible.contains(a) && visible.contains(b)) {
+          canvas.drawLine(
+            center(a),
+            center(b),
+            lines
+              ..shader = null
+              ..color = color,
+          );
+          continue;
+        }
+        // Authored campaign paths connect cell centers one step at a time.
+        if ((a % size - b % size).abs() > 1 ||
+            (a ~/ size - b ~/ size).abs() > 1)
+          continue;
+        final from = center(visible.contains(a) ? a : b);
+        final to = center(visible.contains(a) ? b : a);
+        final delta = to - from;
+        if (delta.distance == 0) continue;
+        final edge = from + delta * .5;
+        final tip = edge + delta / delta.distance * step * .18;
+        lines
+          ..color = color
+          ..shader = ui.Gradient.linear(edge, tip, [
+            color,
+            color.withValues(alpha: 0),
+          ]);
+        canvas.drawLine(from, tip, lines);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_FogLineEdges old) =>
+      old.size != size ||
+      old.visible != visible ||
+      old.marks != marks ||
+      old.fog != fog;
 }
 
 class _BoardGrid extends CustomPainter {
