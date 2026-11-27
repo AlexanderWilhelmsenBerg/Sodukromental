@@ -1,6 +1,6 @@
 # Keep your colony when switching Android debug builds
 
-The published 0.2.0 and 0.2.1 previews use different signing certificates, as did 0.1.0 and 0.2.0. Android requires removing the old preview when switching between these certificates. **Export your saves while the old preview is still installed.** The transfer covers your campaign, creatures, settings, downloaded puzzles and Library notes.
+The published 0.1.0, 0.2.0, 0.2.1 and 0.2.2 previews each use a different signing certificate. Android requires removing the old preview when switching between these certificates. **Export your saves while the old preview is still installed.** The transfer covers your campaign, creatures, settings, downloaded puzzles and Library notes.
 
 Use a computer with Python 3 and Android Platform Tools. Enable USB debugging on your phone, connect it and approve the computer. Run `adb devices` to get its serial number. Run the commands below from the project directory, replacing `DEVICE_SERIAL` with that serial. Pick new folder names somewhere you can keep your backups. [Save-transfer helper](../tool/debug_save_transfer.py) · [Android Platform Tools](https://developer.android.com/tools/releases/platform-tools)
 

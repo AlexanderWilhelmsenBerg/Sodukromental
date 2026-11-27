@@ -6,6 +6,8 @@
 
 ### 0.2.2 · Setter pages and the event log
 
+Download the ZIP and extract `sodukromental-0.2.2-debug-android.apk`. The 0.2.2 preview has a different signing certificate from 0.2.1. **Export your saves before uninstalling your old preview**, then restore them in the new build. [Android debug artifact](https://github.com/AlexanderWilhelmsenBerg/Sodukromental/actions/runs/46008161729/artifacts/15204490030) · [Save-transfer guide](android-debug-save-transfer.md)
+
 In **Sudoku**, search for `000VJJ`, Prof.Dori’s *The Greatest Fog*. Its setter post links **Click here to start the puzzle** directly to SudokuPad. The 0.2.1 importer fetched that package, then rejected its compact fog coordinates. The native player now reads those coordinates, including multiple reveal effects from one cell. An existing save that retained the package can upgrade on the device. For a picture-only save, tap **Check for playable puzzle** while connected. Open **Play puzzle** and turn on airplane mode to continue. [Setter’s post](https://logic-masters.de/Raetselportal/Raetsel/zeigen.php?chlang=en&id=000VJJ)
 
 *Roundabout* (`000VLD`) exercises an earlier step. Its setter labels the play link **CTC-App** and discusses examples elsewhere in the article. The helper now reads the caption next to each link and considers clickable puzzle images. It also distinguishes a puzzle diagram from an example or solution image. If a downloaded format still needs native support, an available puzzle diagram can be opened as a manually checked worksheet. [Roundabout](https://logic-masters.de/Raetselportal/Raetsel/zeigen.php?chlang=en&id=000VLD)
@@ -13,6 +15,8 @@ In **Sudoku**, search for `000VJJ`, Prof.Dori’s *The Greatest Fog*. Its setter
 For supported setter-hosted puzzle pages, the helper checks that the article identifies the requested edition and points to one player destination. GiAnMMV’s *Bent Arrow* (`000W5I`) was tested through the setter’s own article and its SudokuPad API response, whose compressed puzzle contains URL escapes. Both that article and the clickable board on Logic Masters lead to the same native 4×4. [Setter’s article](https://gianmmv.github.io/puzzles/bent-arrow/) · [Logic Masters post](https://logic-masters.de/Raetselportal/Raetsel/zeigen.php?chlang=en&id=000W5I)
 
 To report another failure, open **Puzzle event log** on the puzzle’s details screen after attempting the download. Use **Copy log for a report** to copy the trace for that puzzle. **Library event log** on the Sudoku screen shows recent events across the Library, including catalog errors. The device keeps the latest 400 events across restarts. Reports include the puzzle ID, timestamp, source route, HTTP status, link-selection and import decisions, and download outcome. Embedded puzzle payloads and URL credentials are omitted.
+
+The APK is `0.2.2+7`, built from `509818c10b4c153add37bfcb29b03ac6adaf7573`, with SHA-256 `1c9b74bad5a58b49df6650c53b08327e40cf632c29e657f289b01596c6b9acb8`. All 139 regression tests passed. The Android workflow ran device integration tests and installed and launched this exact artifact. [Build and device checks](https://github.com/AlexanderWilhelmsenBerg/Sodukromental/actions/runs/46008161729)
 
 ### 0.2.1 · Initial recovery and worksheets
 
