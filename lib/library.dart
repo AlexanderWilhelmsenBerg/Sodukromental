@@ -9,6 +9,7 @@ import 'board_view.dart';
 import 'boards.dart';
 import 'creatures.dart';
 import 'library_artwork.dart';
+import 'library_diagram_sheet.dart';
 import 'library_models.dart';
 import 'library_player.dart';
 import 'library_store.dart';
@@ -299,7 +300,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                           entry.author,
                                           _difficultyLabel(entry),
                                           _ratingLabel(entry),
-                                          store.availability(entry.id).label,
+                                          store.availabilityLabel(entry.id),
                                           if (progress !=
                                               LibraryProgress.unplayed)
                                             _progressLabel(progress),
@@ -695,6 +696,9 @@ class _LibraryDetailsState extends State<_LibraryDetails> {
       final entry = saved?.entry ?? fresh;
       final board = saved?.board;
       final native = saved?.nativeDefinition;
+      final hasDiagramDraft =
+          saved?.diagram != null &&
+          LibraryDiagramSheet.hasDraft(widget.store, saved!);
       final job = widget.store.jobs
           .where((job) => job.id == entry.id)
           .firstOrNull;
@@ -723,7 +727,7 @@ class _LibraryDetailsState extends State<_LibraryDetails> {
                   _difficultyLabel(entry),
                   _ratingLabel(entry),
                   if (entry.size != null) '${entry.size} × ${entry.size}',
-                  widget.store.availability(entry.id).label,
+                  widget.store.availabilityLabel(entry.id),
                   if (saved?.manual == true) 'Manual check',
                 ].join(' · '),
               ),
@@ -757,6 +761,27 @@ class _LibraryDetailsState extends State<_LibraryDetails> {
                         ),
                       ),
                     ),
+                  if (saved != null &&
+                      saved.diagram != null &&
+                      (hasDiagramDraft ||
+                          (saved.availability == LibraryAvailability.view &&
+                              saved.supportReasons.isEmpty)))
+                    FilledButton.icon(
+                      icon: const Icon(Icons.grid_on),
+                      label: Text(
+                        hasDiagramDraft
+                            ? 'Resume diagram worksheet'
+                            : 'Solve on diagram',
+                      ),
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => LibraryDiagramSheet(
+                            store: widget.store,
+                            puzzle: saved,
+                          ),
+                        ),
+                      ),
+                    ),
                   if (board != null &&
                       widget.store.challenges.any(
                         (item) => item.id == board.id,
@@ -770,15 +795,29 @@ class _LibraryDetailsState extends State<_LibraryDetails> {
                         widget.onColonyPlay?.call(board);
                       },
                     ),
-                  if (!entry.authored && saved == null)
+                  if (!entry.authored &&
+                      (saved?.availability != LibraryAvailability.play ||
+                          entry.revision != fresh.revision))
                     FilledButton.tonalIcon(
                       icon: const Icon(Icons.download),
                       label: Text(
-                        job == null ? 'Save offline' : _jobLabel(job),
+                        job != null
+                            ? (job.state == LibraryJobState.failed ||
+                                      job.state == LibraryJobState.paused
+                                  ? 'Retry download'
+                                  : _jobLabel(job))
+                            : saved == null
+                            ? 'Save offline'
+                            : entry.revision != fresh.revision
+                            ? 'Download newer revision'
+                            : 'Check for playable puzzle',
                       ),
                       onPressed: job == null
                           ? () => unawaited(
-                              widget.store.requestDownload(entry.id),
+                              widget.store.requestDownload(
+                                entry.id,
+                                replace: saved != null,
+                              ),
                             )
                           : job.state == LibraryJobState.failed ||
                                 job.state == LibraryJobState.paused
@@ -792,16 +831,6 @@ class _LibraryDetailsState extends State<_LibraryDetails> {
                           unawaited(widget.store.removeDownload(entry.id)),
                       child: const Text('Remove download'),
                     ),
-                  if (saved != null &&
-                      !entry.authored &&
-                      entry.revision != fresh.revision &&
-                      job == null)
-                    TextButton(
-                      onPressed: () => unawaited(
-                        widget.store.requestDownload(entry.id, replace: true),
-                      ),
-                      child: const Text('Download newer revision'),
-                    ),
                   if (!entry.authored)
                     OutlinedButton.icon(
                       icon: const Icon(Icons.open_in_new),
@@ -810,6 +839,9 @@ class _LibraryDetailsState extends State<_LibraryDetails> {
                     ),
                 ],
               ),
+              if (job?.reason case final reason?) Text(reason),
+              for (final reason in saved?.supportReasons ?? const <String>[])
+                Text(reason),
               if (_message != null && entry.rules.isEmpty)
                 Padding(
                   padding: const EdgeInsets.only(top: 8),

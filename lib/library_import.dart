@@ -1,13 +1,15 @@
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:html/parser.dart' as html;
+
 import 'boards.dart';
 import 'library_digest.dart';
 import 'library_models.dart';
 import 'library_source.dart';
 
 class LibraryImport {
-  static const resolverVersion = 2;
+  static const resolverVersion = 3;
 
   static Future<LibraryDownload?> read(
     LibraryEntry entry,
@@ -51,8 +53,44 @@ class LibraryImport {
     LibraryFetch fetch, {
     int maxRedirects = 5,
   }) async {
-    final original = Uri.tryParse(entry.content ?? '');
-    if (original == null || !isLibraryPayloadLink(original)) return null;
+    final links = {
+      if (entry.content case final String link) link,
+      ...entry.alternativeContent,
+    };
+    LibraryResolution? reference;
+    LibraryRequestFailure? temporaryFailure;
+    for (final link in links.take(8)) {
+      final original = Uri.tryParse(link);
+      if (original == null || !isLibraryPayloadLink(original)) continue;
+      try {
+        final found = await _resolveLink(entry, fetch, original, maxRedirects);
+        if (found == null) continue;
+        if (links.length == 1 ||
+            decode(entry, found.payload)?.availability ==
+                LibraryAvailability.play) {
+          return found;
+        }
+        reference ??= found;
+      } on LibraryRequestFailure catch (error) {
+        if (error.retry) {
+          // Respect a host's explicit rate limit before trying another URL.
+          if (error.seconds > 0) rethrow;
+          temporaryFailure ??= error;
+        }
+      } on FormatException {
+        // A broken share must not hide another author-supplied edition.
+      }
+    }
+    if (temporaryFailure != null && reference == null) throw temporaryFailure;
+    return reference;
+  }
+
+  static Future<LibraryResolution?> _resolveLink(
+    LibraryEntry entry,
+    LibraryFetch fetch,
+    Uri original,
+    int maxRedirects,
+  ) async {
     var current = original;
     final visited = <String>{};
     for (var hop = 0; hop <= maxRedirects; hop++) {
@@ -72,9 +110,31 @@ class LibraryImport {
         }
         return LibraryResolution(original, current, inline, hop);
       }
-      if (_aliasUri(current)) {
+      if (_aliasUri(current) || current.host == 'solvepaths.droste.ai') {
         if (hop == maxRedirects) return null;
         final response = await fetch(current);
+        if (response.status == 429 || response.status >= 500) {
+          requireLibraryResponse(response);
+        }
+        if (current.host == 'solvepaths.droste.ai' && response.status == 200) {
+          final slug = current.pathSegments.last;
+          final target = html
+              .parse(response.text)
+              .querySelectorAll('a[href]')
+              .map((anchor) => Uri.tryParse(anchor.attributes['href']!))
+              .nonNulls
+              .where(
+                (uri) =>
+                    _safeShareUri(uri) &&
+                    uri.host == 'sudokupad.app' &&
+                    uri.pathSegments.length == 1 &&
+                    uri.pathSegments.single == slug,
+              )
+              .firstOrNull;
+          if (target == null) return null;
+          current = target;
+          continue;
+        }
         if (response.status < 300 || response.status >= 400) return null;
         final location = response.headers['location'];
         if (location == null) return null;
@@ -383,6 +443,7 @@ class LibraryImport {
       'ruleset',
       'grid',
       'solution',
+      'arrow',
       'antiknight',
       'diagonal+',
       'diagonal-',
@@ -396,6 +457,9 @@ class LibraryImport {
     };
     if (json.keys.any((key) => !knownKeys.contains(key) && _hasData(json[key])))
       return null;
+    final refs = <Map<String, dynamic>>[];
+    final hasArrows = _hasData(json['arrow']);
+    List<double> center(int cell) => [cell ~/ size + .5, cell % size + .5];
     final givens = <int>[];
     final regions = _boxRegions(size);
     for (final row in raw.cast<List>()) {
@@ -405,6 +469,8 @@ class LibraryImport {
           (key) => ![
             'value',
             'given',
+            'c',
+            'color',
             'region',
             'candidates',
             'centerPencilMarks',
@@ -412,12 +478,87 @@ class LibraryImport {
           ].contains(key),
         ))
           return null;
+        final color = cell['c'] ?? cell['color'];
+        if (color != null) {
+          if (color is! String || !RegExp(r'^#[0-9a-fA-F]{6}$').hasMatch(color))
+            return null;
+          refs.add({
+            'layer': 'underlays',
+            'center': center(position),
+            'backgroundColor': color,
+          });
+        }
         givens.add(cell['given'] == true ? int.parse('${cell['value']}') : 0);
         if (cell['region'] case final int region when region >= 0)
           regions[position] = region;
       }
     }
     final constraints = <VariantRule>[];
+    if (hasArrows) {
+      if ([
+        'thermometer',
+        'palindrome',
+        'killercage',
+        'difference',
+        'ratio',
+      ].any((key) => _hasData(json[key]))) {
+        return LibraryDownload(
+          entry,
+          supportReasons: const [
+            'This F-Puzzles edition combines arrows with another clue layer that needs drawing support.',
+          ],
+        );
+      }
+      for (final arrow in (json['arrow'] as List).cast<Map>()) {
+        final bulbs = (arrow['cells'] as List)
+            .map((cell) => _fpuzCell(cell, size))
+            .toList();
+        if (bulbs.length != 1) {
+          return LibraryDownload(
+            entry,
+            supportReasons: const [
+              'This F-Puzzles edition uses an arrow with a multi-cell bulb.',
+            ],
+          );
+        }
+        final bulb = bulbs.single;
+        final lines = arrow['lines'] as List;
+        if (lines.isEmpty) return null;
+        for (final line in lines.cast<List>()) {
+          final cells = line.map((cell) => _fpuzCell(cell, size)).toList();
+          if (cells.length < 2 ||
+              cells.first != bulb ||
+              cells.toSet().length != cells.length)
+            return null;
+          constraints.add(VariantRule(RuleKind.arrow, cells));
+          final points = cells.map(center).toList();
+          final dr = points[1][0] - points[0][0];
+          final dc = points[1][1] - points[0][1];
+          final length = math.sqrt(dr * dr + dc * dc);
+          // Start at the rim so the transparent bulb preserves the cell tint.
+          points[0] = [
+            points[0][0] + .35 * dr / length,
+            points[0][1] + .35 * dc / length,
+          ];
+          refs.add({
+            'layer': 'arrows',
+            'wayPoints': points,
+            'color': '#707070',
+            'thickness': 3,
+            'headLength': .23,
+          });
+        }
+        refs.add({
+          'layer': 'overlays',
+          'center': center(bulb),
+          'width': .7,
+          'height': .7,
+          'rounded': true,
+          'borderColor': '#707070',
+          'stroke-width': 3,
+        });
+      }
+    }
     if (json['antiknight'] == true)
       constraints.add(
         VariantRule(RuleKind.antiKnight, List.generate(size * size, (i) => i)),
@@ -472,27 +613,51 @@ class LibraryImport {
     final normalized = constraints
         .map((rule) => libraryRuleFor(rule.kind))
         .toSet();
-    final knownRules =
-        _classicRules(rules, entry) ||
-        (rules.isNotEmpty &&
-            rules.length < 180 &&
-            !RegExp(
-              r'\b(no|all|negative|unmarked|other)\b',
-              caseSensitive: false,
-            ).hasMatch(rules) &&
-            normalized.containsAll(matchLibraryRules(rules, entry.tags)) &&
-            normalized.containsAll(entry.ruleIds));
+    final knownRules = hasArrows
+        ? _standardArrowRules(rules) && normalized.containsAll(entry.ruleIds)
+        : _classicRules(rules, entry) ||
+              (rules.isNotEmpty &&
+                  rules.length < 180 &&
+                  !RegExp(
+                    r'\b(no|all|negative|unmarked|other)\b',
+                    caseSensitive: false,
+                  ).hasMatch(rules) &&
+                  normalized.containsAll(
+                    matchLibraryRules(rules, entry.tags),
+                  ) &&
+                  normalized.containsAll(entry.ruleIds));
     return _build(
       entry,
       size,
       givens,
       regions,
       constraints,
-      [],
+      refs,
       knownRules: knownRules,
       solution: json['solution'],
       authorRules: rules,
+      inferSolution: !hasArrows,
     );
+  }
+
+  static bool _standardArrowRules(String text) {
+    final normalized = text
+        .toLowerCase()
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    final remaining = normalized
+        .replaceAll(
+          RegExp(r'(?:normal|standard|classic) sudoku rules apply[.!]?'),
+          '',
+        )
+        .replaceAll(
+          RegExp(
+            r"digits along an arrow add up to the digit in that arrow's circle[.!]?",
+          ),
+          '',
+        )
+        .replaceAll(RegExp(r'digits may repeat on an arrow[.!]?'), '');
+    return normalized.isNotEmpty && remaining.trim().isEmpty;
   }
 
   static LibraryDownload? _build(
@@ -503,6 +668,7 @@ class LibraryImport {
     List<VariantRule> constraints,
     List<Map<String, dynamic>> refs, {
     required bool knownRules,
+    bool inferSolution = true,
     Object? solution,
     String authorRules = '',
     LibraryPuzzleDefinition? definition,
@@ -535,7 +701,7 @@ class LibraryImport {
     final hasSolution = board.accepts(complete);
     if (hasSolution) {
       board = boardWith(complete);
-    } else if (knownRules) {
+    } else if (knownRules && inferSolution) {
       final solved = board.solve();
       if (solved != null) board = boardWith(solved);
     }
@@ -670,8 +836,12 @@ bool _looksLikeHtml(String value) => RegExp(
   caseSensitive: false,
 ).hasMatch(value);
 
-bool _aliasUri(Uri uri) =>
-    uri.host == 'tinyurl.com' || uri.host == 'www.tinyurl.com';
+bool _aliasUri(Uri uri) => const {
+  'tinyurl.com',
+  'www.tinyurl.com',
+  'shorturl.at',
+  'www.shorturl.at',
+}.contains(uri.host);
 
 bool _safeShareUri(Uri uri) {
   if (uri.scheme != 'https' ||
@@ -683,6 +853,9 @@ bool _safeShareUri(Uri uri) {
   return switch (uri.host) {
     'tinyurl.com' ||
     'www.tinyurl.com' ||
+    'shorturl.at' ||
+    'www.shorturl.at' => isLibraryPayloadLink(uri),
+    'solvepaths.droste.ai' => isLibraryPayloadLink(uri),
     'sudokupad.app' ||
     'www.sudokupad.app' ||
     'app.crackingthecryptic.com' ||
@@ -769,9 +942,25 @@ bool _matchesEmbeddedTitle(LibraryEntry entry, String encoded) {
     final body = prefix == null ? encoded : encoded.substring(prefix.end);
     final object = _decodeJson(body.startsWith('{') ? body : _decompress(body));
     final metadata = object['metadata'];
-    final title = metadata is Map
-        ? metadata['title']?.toString()
-        : object['title']?.toString();
+    final cages = object['cages'];
+    final legacyTitle = cages is List
+        ? cages
+              .whereType<Map>()
+              .map((cage) => cage['value'])
+              .whereType<String>()
+              .map(
+                (value) => RegExp(
+                  r'^title\s*:\s*(.+)$',
+                  caseSensitive: false,
+                ).firstMatch(value)?.group(1),
+              )
+              .nonNulls
+              .firstOrNull
+        : null;
+    final title =
+        (metadata is Map ? metadata['title']?.toString() : null) ??
+        object['title']?.toString() ??
+        legacyTitle;
     if (title == null || title.trim().isEmpty || entry.title.trim().isEmpty) {
       return true;
     }
@@ -784,6 +973,7 @@ bool _matchesEmbeddedTitle(LibraryEntry entry, String encoded) {
     final actual = normalize(title);
     return expected == actual ||
         (expected.length >= 8 &&
+            actual.length >= 4 &&
             (expected.contains(actual) || actual.contains(expected)));
   } on FormatException {
     return false;

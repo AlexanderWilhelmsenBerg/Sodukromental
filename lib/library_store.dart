@@ -87,6 +87,7 @@ class LibraryStore extends ChangeNotifier {
   final _downloads = <String, LibraryDownload>{};
   final _archives = <String, LibraryDownload>{};
   final _saves = <String, LibrarySave>{};
+  final _diagramSheets = <String, Map<String, dynamic>>{};
   final _latest = <String, LibrarySave>{};
   final _jobs = <String, LibraryJob>{};
   final _dismissed = <String>{};
@@ -184,6 +185,11 @@ class LibraryStore extends ChangeNotifier {
       _jobs[entry.key] = job;
     }
     _prefs.addAll(results[4]['source'] ?? {});
+    for (final row in results[4].entries.where(
+      (row) => row.key.startsWith('diagram-sheet:'),
+    )) {
+      _diagramSheets[row.key] = row.value;
+    }
     _dismissed.addAll((_prefs['dismissed'] as List? ?? []).cast<String>());
     _settled.addAll((_prefs['settled'] as Map? ?? {}).cast<String, String>());
     final seeds = records ?? await _catalogSeed();
@@ -241,8 +247,23 @@ class LibraryStore extends ChangeNotifier {
       final payload = provenance['sourcePayload'] as String?;
       final version = provenance['resolverVersion'] as int? ?? 0;
       if (payload == null || version >= LibraryImport.resolverVersion) continue;
+      // Working installations can contain rewritten, device-local image
+      // references. Keep them intact when a new import format is added.
+      if (old.availability == LibraryAvailability.play &&
+          old.definition != null)
+        continue;
       final decoded = LibraryImport.decode(old.entry, payload);
-      if (decoded == null) continue;
+      if (decoded == null || decoded.availability != LibraryAvailability.play)
+        continue;
+      // Newly supported artwork may need an online fetch before it can play.
+      // Existing offline copies keep their current status until then.
+      if (decoded.refs.any(
+        (layer) => RegExp(
+          r'https?://',
+          caseSensitive: false,
+        ).hasMatch(jsonEncode(layer)),
+      ))
+        continue;
       final refreshed = LibraryDownload(
         decoded.entry,
         board: decoded.board,
@@ -323,12 +344,40 @@ class LibraryStore extends ChangeNotifier {
       .toList();
 
   bool saved(String id) => _downloads[id] != null;
+  String availabilityLabel(String id) {
+    final value = availability(id);
+    if (value != LibraryAvailability.original) return value.label;
+    if (_downloads.containsKey(id))
+      return 'Saved reference · player unavailable';
+    if (_settled.containsKey(id) ||
+        _jobs[id]?.state == LibraryJobState.failed) {
+      return 'No offline puzzle saved';
+    }
+    return value.label;
+  }
+
   LibraryAvailability availability(String id) => _entries[id]?.authored == true
       ? LibraryAvailability.play
       : _downloads[id]?.availability ?? LibraryAvailability.original;
 
   LibrarySave? getSave(String id, [String? revision]) =>
       revision == null ? _latest[id] : _saves['$id|$revision'];
+
+  Map<String, dynamic>? getDiagramSheet(String id, String revision) =>
+      _diagramSheets['diagram-sheet:$id|$revision'];
+
+  Future<void> saveDiagramSheet(
+    String id,
+    String revision,
+    Map<String, dynamic> sheet,
+  ) async {
+    if (_disposed) return;
+    final key = 'diagram-sheet:$id|$revision';
+    await _db.write('preferences', key, sheet);
+    if (_disposed) return;
+    _diagramSheets[key] = sheet;
+    _changed();
+  }
 
   Future<void> save(String id, String revision, LibrarySave value) async {
     if (_disposed) return;
@@ -617,11 +666,17 @@ class LibraryStore extends ChangeNotifier {
     );
   }
 
-  Future<LibraryEntry> details(String id, {String language = 'en'}) {
+  Future<LibraryEntry> details(
+    String id, {
+    String language = 'en',
+    bool refresh = false,
+  }) {
     final old = _entries[id]!;
     if (_disposed ||
         old.authored ||
-        (old.detailRead != null &&
+        (!refresh &&
+            old.discoveryVersion == libraryDiscoveryVersion &&
+            old.detailRead != null &&
             (old.language == language || old.requestedLanguage == language) &&
             _now().difference(old.detailRead!) <= const Duration(days: 7))) {
       return Future.value(old);
@@ -662,7 +717,10 @@ class LibraryStore extends ChangeNotifier {
           url,
           _now(),
         );
-        if (candidate.entry.rules.isEmpty && !candidate.entry.withdrawn)
+        if (candidate.entry.rules.isEmpty &&
+            candidate.entry.content == null &&
+            candidate.entry.diagram == null &&
+            !candidate.entry.withdrawn)
           continue;
         detail = candidate;
         break;
@@ -790,7 +848,8 @@ class LibraryStore extends ChangeNotifier {
     if (_disposed) return;
     final entry = _entries[id];
     if (entry == null || entry.authored || entry.withdrawn) return;
-    if (!replace && _downloads.containsKey(id)) return;
+    if (!replace && _downloads[id]?.availability == LibraryAvailability.play)
+      return;
     _dismissed.remove(id);
     _settled.remove(id);
     await _persistPreferences();
@@ -830,6 +889,10 @@ class LibraryStore extends ChangeNotifier {
     if (_disposed) return;
     final job = _jobs[id];
     if (job == null) return;
+    final entry = _entries[id];
+    if (job.state == LibraryJobState.failed && entry != null) {
+      await _setEntry(entry.withData({'detailRead': null}));
+    }
     await _putJob(LibraryJob(id, job.revision, true, LibraryJobState.queued));
     _changed();
     unawaited(_drain());
@@ -859,13 +922,14 @@ class LibraryStore extends ChangeNotifier {
               (entry) =>
                   !entry.authored &&
                   !entry.withdrawn &&
-                  (!_downloads.containsKey(entry.id) ||
+                  (_downloads[entry.id]?.availability !=
+                          LibraryAvailability.play ||
                       (entry.revision.isNotEmpty &&
                           _downloads[entry.id]!.entry.revision !=
                               entry.revision)) &&
                   !_jobs.containsKey(entry.id) &&
                   !_dismissed.contains(entry.id) &&
-                  _settled[entry.id] != entry.revision,
+                  _settled[entry.id] != _acquisitionKey(entry),
             )
             .toList()
           ..sort(_newest);
@@ -878,6 +942,9 @@ class LibraryStore extends ChangeNotifier {
       );
     }
   }
+
+  String _acquisitionKey(LibraryEntry entry) =>
+      '$libraryDiscoveryVersion/${LibraryImport.resolverVersion}/${entry.revision}';
 
   Future<void> _drain() {
     if (_disposed) return Future.value();
@@ -973,7 +1040,13 @@ class LibraryStore extends ChangeNotifier {
   }
 
   Future<void> _runJob(String id) async {
-    final entry = await details(id);
+    final previous = _downloads[id];
+    final selected = _entries[id]!;
+    final entry = await details(
+      id,
+      language: selected.requestedLanguage ?? selected.language,
+      refresh: previous != null && _jobs[id]?.manual == true,
+    );
     if (_disposed || !_jobAllowed(id)) return;
     if (entry.withdrawn) {
       await _forgetJob(id);
@@ -986,26 +1059,62 @@ class LibraryStore extends ChangeNotifier {
       if (error.retry) rethrow;
     }
     if (_disposed || !_jobAllowed(id)) return;
+    if (result?.availability != LibraryAvailability.play) {
+      for (final language in entry.languages.where(
+        (language) =>
+            (language == 'en' || language == 'de') &&
+            language != entry.language,
+      )) {
+        if (!_jobAllowed(id) || _disposed) return;
+        final uri = entry.portal.replace(
+          queryParameters: {'chlang': language, 'id': id},
+        );
+        final page = await _fetch(uri);
+        if (page.status == 404 || page.status == 410) continue;
+        LibraryEntry other;
+        try {
+          other = parseLibraryDetail(
+            requireLibraryResponse(page).text,
+            entry,
+            uri,
+            _now(),
+          ).entry;
+        } on FormatException {
+          // A malformed translation must not discard the primary diagram.
+          continue;
+        }
+        if (other.withdrawn) continue;
+        final seen = {entry.content, ...entry.alternativeContent};
+        final links = [
+          other.content,
+          ...other.alternativeContent,
+        ].nonNulls.where((url) => !seen.contains(url)).toList();
+        if (links.isEmpty) continue;
+        final translated = await LibraryImport.read(
+          entry.withData({
+            'content': links.first,
+            'alternativeContent': links.skip(1).toList(),
+          }),
+          _fetch,
+        );
+        if (translated != null &&
+            (result == null ||
+                translated.availability == LibraryAvailability.play)) {
+          result = translated;
+        }
+        if (result?.availability == LibraryAvailability.play) break;
+      }
+    }
+    if (_disposed || !_jobAllowed(id)) return;
     if ((result == null ||
             result.availability == LibraryAvailability.original) &&
-        entry.diagram != null &&
-        entry.rules.isNotEmpty) {
+        entry.diagram != null) {
       final link = Uri.tryParse(entry.diagram!);
       if (link != null && isLibraryDiagramLink(link)) {
         final response = await _fetch(link);
         if (response.status == 200 && await _decodeImage(response.bytes)) {
-          final retained = result;
-          result = LibraryDownload(
-            retained?.entry ?? entry,
-            board: retained?.board,
-            refs: retained?.refs ?? const [],
-            diagram: base64Encode(response.bytes),
-            manual: retained?.manual ?? false,
-            finalCheck: retained?.finalCheck ?? false,
-            definition: retained?.definition,
-            provenance: retained?.provenance ?? const {},
-            supportReasons: retained?.supportReasons ?? const [],
-            assetManifest: retained?.assetManifest ?? const [],
+          result = (result ?? LibraryDownload(entry)).withDiagram(
+            base64Encode(response.bytes),
           );
         } else if (response.status == 429 || response.status >= 500) {
           requireLibraryResponse(response);
@@ -1013,15 +1122,24 @@ class LibraryStore extends ChangeNotifier {
       }
     }
     if (_disposed || !_jobAllowed(id)) return;
+    if (result?.availability == LibraryAvailability.play &&
+        previous?.diagram != null &&
+        previous!.entry.revision == entry.revision) {
+      result = result!.withDiagram(previous.diagram!);
+    }
     final active = _jobs[id]!;
-    if (result == null && active.manual) {
+    if ((result == null && active.manual) ||
+        (previous != null &&
+            (result?.availability.index ?? -1) < previous.availability.index)) {
       await _putJob(
         LibraryJob(
           id,
           entry.revision,
-          true,
+          active.manual,
           LibraryJobState.failed,
-          reason: 'The original link has the available puzzle content.',
+          reason: previous != null
+              ? 'No better offline copy was found. Your saved copy is available.'
+              : 'No playable grid or downloadable puzzle diagram was found on the setter’s puzzle page.',
         ),
       );
       return;
@@ -1047,13 +1165,13 @@ class LibraryStore extends ChangeNotifier {
       await _db.write('preferences', 'source', {
         ..._prefs,
         'dismissed': _dismissed.toList(),
-        'settled': {..._settled, id: entry.revision},
+        'settled': {..._settled, id: _acquisitionKey(entry)},
       });
       await _db.erase('jobs', id);
       return true;
     });
     if (!logged) return;
-    _settled[id] = entry.revision;
+    _settled[id] = _acquisitionKey(entry);
     if (result != null) {
       final previous = _downloads[id];
       final oldFingerprint = previous?.provenance['fingerprint'] as String?;

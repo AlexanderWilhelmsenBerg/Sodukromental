@@ -236,6 +236,8 @@ class LibraryDetail {
   final List<String> videoIds;
 }
 
+const libraryDiscoveryVersion = 1;
+
 LibraryDetail parseLibraryDetail(
   String input,
   LibraryEntry original,
@@ -287,12 +289,12 @@ LibraryDetail parseLibraryDetail(
   final difficulty = _difficulty(
     stats['difficulty:'] ?? stats['schwierigkeit:'],
   );
-  final content = _rankPlayerLinks(
+  final candidates = _rankPlayerLinks(
     body,
     uri,
     _string(title),
     original.author,
-  ).firstOrNull;
+  );
   final diagram = body
       .querySelectorAll('img[src]')
       .map((image) => _link(uri, image, 'src'))
@@ -320,6 +322,7 @@ LibraryDetail parseLibraryDetail(
       .querySelectorAll('img.langwahl')
       .map((image) => image.attributes['alt'])
       .nonNulls
+      .where((code) => code == 'en' || code == 'de')
       .toSet();
   final revision =
       _date(_string(document.querySelector('.rp_aenderdatum')), fetchedAt) ??
@@ -344,7 +347,12 @@ LibraryDetail parseLibraryDetail(
       'rules': block,
       'ruleIds': matchLibraryRules(block, tags).toList(),
       'tags': tags,
-      'content': content?.toString(),
+      'content': candidates.firstOrNull?.toString(),
+      'alternativeContent': candidates
+          .skip(1)
+          .map((uri) => uri.toString())
+          .toList(),
+      'discoveryVersion': libraryDiscoveryVersion,
       'diagram': diagram?.toString(),
       'size': original.size ?? int.tryParse(sizeMatch?.group(1) ?? ''),
       'revision': revision?.toIso8601String() ?? original.revision,
@@ -385,7 +393,15 @@ bool isLibraryPayloadLink(Uri uri) =>
       'f-puzzles.com' || 'www.f-puzzles.com' =>
         uri.queryParameters.containsKey('load') ||
             uri.queryParameters.containsKey('id'),
-      'tinyurl.com' || 'www.tinyurl.com' => uri.pathSegments.length == 1,
+      'tinyurl.com' ||
+      'www.tinyurl.com' ||
+      'shorturl.at' ||
+      'www.shorturl.at' =>
+        uri.pathSegments.length == 1 && uri.pathSegments.single.isNotEmpty,
+      'solvepaths.droste.ai' =>
+        uri.pathSegments.length == 2 &&
+            uri.pathSegments.first == 'play' &&
+            RegExp(r'^[\w-]+$').hasMatch(uri.pathSegments.last),
       _ => false,
     };
 
@@ -423,6 +439,13 @@ List<Uri> _rankPlayerLinks(
     if (RegExp(
       r'\b(previous|earlier|last|another|example|series|index|inspired|sequel)\b',
     ).hasMatch(context)) {
+      // An earlier puzzle or an example may also be a valid, untitled grid.
+      // It cannot act as an alternate for this entry merely by decoding.
+      if (normalizedTitle.isNotEmpty &&
+          !label.contains(normalizedTitle) &&
+          !RegExp(r'\b(play|solve|sudoku ?pad|f puzzles?)\b').hasMatch(label)) {
+        continue;
+      }
       score -= 80;
     }
     if (anchor.querySelector('img') != null) score += 10;
@@ -548,7 +571,14 @@ Uri? _link(Uri base, Element element, [String attr = 'href']) {
   final raw = element.attributes[attr];
   if (raw == null || raw.isEmpty) return null;
   try {
-    final resolved = base.resolve(raw);
+    var resolved = base.resolve(raw.trim());
+    if (resolved.scheme == 'http' &&
+        !resolved.hasPort &&
+        resolved.userInfo.isEmpty) {
+      final https = resolved.replace(scheme: 'https');
+      if (isLibraryPayloadLink(https) || isLibraryDiagramLink(https))
+        resolved = https;
+    }
     return resolved.scheme == 'https' && resolved.userInfo.isEmpty
         ? resolved
         : null;

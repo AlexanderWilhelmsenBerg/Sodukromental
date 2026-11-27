@@ -478,7 +478,12 @@ class LibraryPlayerController extends ChangeNotifier {
     } else if (puzzle.board case final board?) {
       final digits = _legacyDigits(effective);
       if (board.accepts(digits)) {
-        result = const LibraryCheckResult('Puzzle solved.', solved: true);
+        result = puzzle.manual
+            ? const LibraryCheckResult(
+                'Manual check: the implemented clues pass. Check the additional written rules.',
+                manual: true,
+              )
+            : const LibraryCheckResult('Puzzle solved.', solved: true);
       } else {
         final boardConflicts = board.conflicts(digits).toSet();
         conflicts = boardConflicts;

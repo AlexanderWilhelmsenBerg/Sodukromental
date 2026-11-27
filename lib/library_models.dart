@@ -232,6 +232,8 @@ class LibraryEntry {
     this.tags = const {},
     this.completeRules = false,
     this.content,
+    this.alternativeContent = const [],
+    this.discoveryVersion = 0,
     this.diagram,
     this.revision = '',
     this.language = 'en',
@@ -256,6 +258,8 @@ class LibraryEntry {
   final Map<String, String> tags;
   final bool completeRules;
   final String? content;
+  final List<String> alternativeContent;
+  final int discoveryVersion;
   final String? diagram;
   final String revision;
   final String language;
@@ -296,6 +300,8 @@ class LibraryEntry {
     'tags': tags,
     'completeRules': completeRules,
     'content': content,
+    'alternativeContent': alternativeContent,
+    'discoveryVersion': discoveryVersion,
     'diagram': diagram,
     'revision': revision,
     'language': language,
@@ -321,6 +327,9 @@ class LibraryEntry {
     tags: (json['tags'] as Map? ?? const {}).cast<String, String>(),
     completeRules: json['completeRules'] as bool? ?? false,
     content: json['content'] as String?,
+    alternativeContent: (json['alternativeContent'] as List? ?? const [])
+        .cast<String>(),
+    discoveryVersion: json['discoveryVersion'] as int? ?? 0,
     diagram: json['diagram'] as String?,
     revision: json['revision'] as String? ?? '',
     language: json['language'] as String? ?? 'en',
@@ -545,6 +554,19 @@ class LibraryDownload {
       : diagram != null
       ? LibraryAvailability.view
       : LibraryAvailability.original;
+
+  LibraryDownload withDiagram(String image) => LibraryDownload(
+    entry,
+    board: board,
+    refs: refs,
+    diagram: image,
+    manual: manual,
+    finalCheck: finalCheck,
+    definition: definition,
+    provenance: provenance,
+    supportReasons: supportReasons,
+    assetManifest: assetManifest,
+  );
 
   Map<String, dynamic> toJson() => {
     'entry': entry.toJson(),
