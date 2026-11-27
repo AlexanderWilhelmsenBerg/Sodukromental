@@ -2,6 +2,15 @@
 
 **Player journey.** Pick a Logic Masters Deutschland entry in **Sudoku**, download the setter's chosen edition while connected, then reopen it from **Saved** in airplane mode. Opening the setter's page or a Cracking the Cryptic video is an explicit reference action. Neither link starts or completes a game download. Automatic acquisition remains a preference and starts off.
 
+## Android debug handoff
+
+Download the artifact ZIP and extract `sodukromental-0.2.1-debug-android.apk`. If you play the published 0.2.0 preview, export your saves before uninstalling it. The two builds have different Android signing certificates. [Debug APK artifact](https://github.com/AlexanderWilhelmsenBerg/Sodukromental/actions/runs/45998927694/artifacts/15197927532) · [Save-transfer instructions](android-debug-save-transfer.md)
+
+1. Search for **Classic 21.07** or **HI (Arrows edition)** in **Sudoku**. Tap **Save offline**, or **Check for playable puzzle** on a previously saved reference. Open **Play puzzle**, make a mark, switch to airplane mode and resume. Both live shares resolved to native 9×9 boards in the handoff check.
+2. Download Shinya’s **Classic Sudoku** (`00036W`). Its setter publishes a picture. Choose **Solve on diagram**, align the grid to the picture and enter a digit. Reopen the worksheet in airplane mode and edit it. The player checks their own finish.
+
+The Android workflow passed the Flutter checks, emulator integration and installation of the exact debug artifact. The local regression suite passed all 127 tests. The APK is version `0.2.1+5` from `c0d771bb2887ca8ea2fb0cf801d93e4069b52da3`. Its SHA-256 digest is `a062421f75a290ae8665b80a57193003e09544a440beae24a9e6544d795a752d`. Windows, Linux and iOS simulator compile checks passed on the same application code, before a test-only change to tap a visible search result. [Android build and device tests](https://github.com/AlexanderWilhelmsenBerg/Sodukromental/actions/runs/45998927694) · [Port checks](https://github.com/AlexanderWilhelmsenBerg/Sodukromental/actions/runs/45997436306)
+
 ## What the 0.2.0 report uncovered
 
 The reported title was unspecified. We traced several independently reproducible ways an entry could look like “setter's page only.” In 0.2.0 the detail parser kept one ranked play link even when several were present. Some short resolver URLs were excluded. A saved reference hid the ordinary download and details refresh and could prevent a second attempt at the same revision. A successfully downloaded payload could also be rejected during decoding. Finally, some setters genuinely published only an illustration. The byline/profile, the canonical puzzle post, a playable share, a player HTML shell and a puzzle payload have different roles. [Detail parser](../lib/library_source.dart) · [Acquisition and persistence](../lib/library_store.dart) · [Native importer](../lib/library_import.dart)

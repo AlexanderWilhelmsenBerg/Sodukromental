@@ -22,6 +22,6 @@ Build an installable tester APK with `flutter build apk --debug`. The GitHub Act
 
 ## Debug testing
 
-Use the [Phase 2 debug handoff](docs/phase-2-debug-handoff.md) for installation and playtest scenarios. The [Phase 1 handoff](docs/debug-handoff.md) documents the earlier build. The [slice register](docs/debug-release-slices.md) tracks the implementation against the [release plan](docs/release-plan.md) and [game specification](docs/game-specification.md). Story, mechanics and UI/UX findings feed the [independent review](docs/agent-review.md).
+Download the 0.2.1 preview and try the three Library cases in the [Android hotfix handoff](docs/phase-3-library.md#android-debug-handoff). The [Phase 2 playtest guide](docs/phase-2-debug-handoff.md) covers the campaign and the [Phase 1 handoff](docs/debug-handoff.md) documents the earlier build. The [slice register](docs/debug-release-slices.md) tracks the implementation against the [release plan](docs/release-plan.md) and [game specification](docs/game-specification.md). Story, mechanics and UI/UX findings feed the [independent review](docs/agent-review.md).
 
 Logic Masters puzzles credit their setters and link to their original pages. The bundled fonts include their licenses in `assets/fonts`.
