@@ -6,6 +6,8 @@ The **Sudoku** tab opens independently of the colony. Browse the Logic Masters D
 
 The Phase 2 debug build adds branching ecology hatches, living pixel villages and native offline solving tools. Residents fetch digits, carry torches along earned paths and build with letters from the screen. After classic 9×9, a Renban worm introduces the first variant with a practice example. [Phase 2 playtest guide](docs/phase-2-debug-handoff.md)
 
+The [Phase 3 colony specification](docs/phase-3-living-colony.md) covers screen-wide settlements, relationships, survival and the five-step hatch. The [Library repair notes](docs/phase-3-library.md) track setter-page recovery and offline play.
+
 ## Run locally
 
 Use Flutter 3.44.4 with Dart 3.12.2 and JDK 21. The Android build uses SDK 36. On a configured Android host, run the following from the repository root.
