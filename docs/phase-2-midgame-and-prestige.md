@@ -6,7 +6,9 @@ Keep **13 shared boards + 3 boards on one chosen route = 16 to the first ending*
 
 ## From a stock of digits to a crew
 
-Use the current objective, board and habitat to tell the following story. An entry line identifies the work the puzzle presents. An outcome names the individual who actually did it. If the optional job never happened, the ordinary clear leads straight onward. Dialogue, animation and opening the Colony sheet are optional.
+Use the current objective, board and habitat to tell the following story. An entry line identifies the work the puzzle presents. An outcome names the individual who actually did it. When a player moves a worker from digits to building, follow that individual from the pad to the job site and show the change of gait as it picks up the beam. [Creature movement and animation](phase-2-colony.md#how-creatures-move-across-the-play-screen)
+
+If the optional job never happened, the ordinary clear leads straight onward. Dialogue, animation and opening the Colony sheet are optional.
 
 | Board, in play order | What the player can do and see |
 | --- | --- |
