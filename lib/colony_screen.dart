@@ -1046,6 +1046,14 @@ class _ColonyScreenState extends State<ColonyScreen> {
     _fragment = null;
     _token = _slide = _digit = null;
     if (selected) {
+      final cell = _cell;
+      if (!_notes &&
+          cell != null &&
+          run.cells[cell] == 0 &&
+          run.visible.contains(cell)) {
+        _claim(offer.id, cell);
+        return;
+      }
       _offer = offer.id;
       run.holdOffer(offer.id);
       _feedback = 'Tap a square for ${offer.digit}.';

@@ -85,6 +85,36 @@ void main() {
     },
   );
 
+  testWidgets('a delivered digit goes straight to the chosen empty cell', (
+    tester,
+  ) async {
+    final start = DateTime.utc(2026);
+    final saved = Campaign(now: start).toJson()
+      ..['clears'] = ['opening']
+      ..['creatures'] = [Creature.amoeba(41).toJson()];
+    final run = Campaign.fromJson(saved);
+    expect(run.openBoard('growth-5'), isTrue);
+    expect(run.requestDigit(5), isTrue);
+    for (var seconds = 1; seconds <= 60 && run.offers.isEmpty; seconds++) {
+      run.tick(start.add(Duration(seconds: seconds)));
+    }
+    final offer = run.offers.singleWhere((offer) => offer.digit == 5);
+    final index = run.board.indices.firstWhere(
+      (i) => run.board.solution[i] == 5 && run.cells[i] == 0,
+    );
+    await tester.pumpWidget(_app(run));
+    final target = find.byKey(ValueKey('cell-$index'));
+    await tester.ensureVisible(target);
+    await tester.tap(target);
+    await tester.pump();
+    final delivery = find.byKey(ValueKey('offer-${offer.id}'));
+    await tester.ensureVisible(delivery);
+    await tester.tap(delivery);
+    await tester.pump();
+    expect(run.cells[index], 5);
+    expect(run.offers.where((o) => o.id == offer.id), isEmpty);
+  });
+
   testWidgets('two matching, idle helpers flock at the tray', (tester) async {
     final start = DateTime.utc(2026);
     final amoeba = Creature.amoeba(1).toJson();
